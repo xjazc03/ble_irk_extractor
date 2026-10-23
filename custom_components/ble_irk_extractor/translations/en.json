@@ -1,0 +1,95 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BLE IRK Extractor",
+        "description": "Point the integration at the BlueZ bond data on your Home Assistant host. {path_help}",
+        "data": {
+          "name": "Name",
+          "copied_path": "Copied BlueZ folder",
+          "host_path": "Host BlueZ folder",
+          "scan_interval": "Rescan interval"
+        },
+        "data_description": {
+          "name": "Friendly name for this extractor.",
+          "copied_path": "Folder containing BlueZ info files copied into Home Assistant. Default: /config/bluez_irks.",
+          "host_path": "BlueZ host storage. Default: /var/lib/bluetooth. Leave blank if this path is not available in the container.",
+          "scan_interval": "How often to reread the BlueZ files, in minutes."
+        }
+      },
+      "no_keys": {
+        "title": "No IRKs found yet",
+        "description": "The configured paths exist, but no Identity Resolving Keys were found in: {paths}. You can finish setup now and add keys later, or go back and correct the paths.",
+        "data": {
+          "setup_anyway": "Set up anyway"
+        },
+        "data_description": {
+          "setup_anyway": "Finish setup even though no keys are present yet. The sensor will update automatically when keys appear."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure BLE IRK Extractor",
+        "description": "Update the BlueZ source paths or scan interval. {path_help}",
+        "data": {
+          "name": "Name",
+          "copied_path": "Copied BlueZ folder",
+          "host_path": "Host BlueZ folder",
+          "scan_interval": "Rescan interval"
+        },
+        "data_description": {
+          "name": "Friendly name for this extractor.",
+          "copied_path": "Folder containing BlueZ info files copied into Home Assistant. Default: /config/bluez_irks.",
+          "host_path": "BlueZ host storage. Default: /var/lib/bluetooth. Leave blank if this path is not available in the container.",
+          "scan_interval": "How often to reread the BlueZ files, in minutes."
+        }
+      }
+    },
+    "error": {
+      "no_paths": "Enter at least one BlueZ source path.",
+      "path_not_found": "None of the configured paths exist. Check the paths and try again.",
+      "unknown": "Unexpected error. Check the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "BLE IRK Extractor is already configured.",
+      "no_pending_setup": "The setup data was lost. Please start again.",
+      "reconfigure_successful": "Reconfiguration successful.",
+      "unknown_entry": "The config entry could not be found."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BLE IRK Extractor options",
+        "description": "Change the BlueZ source paths or how often the files are rescanned. {path_help}",
+        "data": {
+          "name": "Name",
+          "copied_path": "Copied BlueZ folder",
+          "host_path": "Host BlueZ folder",
+          "scan_interval": "Rescan interval"
+        },
+        "data_description": {
+          "name": "Friendly name for this extractor.",
+          "copied_path": "Folder containing BlueZ info files copied into Home Assistant. Default: /config/bluez_irks.",
+          "host_path": "BlueZ host storage. Default: /var/lib/bluetooth. Leave blank if this path is not available in the container.",
+          "scan_interval": "How often to reread the BlueZ files, in minutes."
+        }
+      }
+    },
+    "error": {
+      "no_paths": "Enter at least one BlueZ source path.",
+      "path_not_found": "None of the configured paths exist. Check the paths and try again."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "irk_keys": {
+        "name": "IRK keys"
+      }
+    },
+    "button": {
+      "rescan": {
+        "name": "Rescan BlueZ data"
+      }
+    }
+  }
+}
