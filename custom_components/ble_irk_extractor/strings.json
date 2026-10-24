@@ -27,6 +27,46 @@
           "setup_anyway": "Finish setup even though no keys are present yet. The sensor will update automatically when keys appear."
         }
       },
+      "pair_device": {
+        "title": "Pair a new Bluetooth device",
+        "description": "Select the Bluetooth adapter you want to pair through. Make sure the device is discoverable.",
+        "data": {
+          "adapter_address": "Bluetooth adapter"
+        },
+        "data_description": {
+          "adapter_address": "The host Bluetooth adapter to scan and pair through."
+        }
+      },
+      "device_selection": {
+        "title": "Select a Bluetooth device",
+        "description": "Choose the device you want to pair with from the discovered list. This scan lasts up to 10 seconds.",
+        "data": {
+          "device_address": "Bluetooth device"
+        },
+        "data_description": {
+          "device_address": "The device to pair with."
+        }
+      },
+      "pair_confirm": {
+        "title": "Confirm pairing",
+        "description": "You are about to pair with: {device_name} ({device_address}). Ensure the device is in pairing mode.",
+        "data": {
+          "confirm": "Pair with this device"
+        },
+        "data_description": {
+          "confirm": "Start pairing and extract the device's IRK."
+        }
+      },
+      "pairing_result": {
+        "title": "Pairing complete",
+        "description": "The pairing with {device_name} finished. The Identity Resolving Key (IRK) is shown below. You can use it to set up Home Assistant's Private BLE Device integration.",
+        "data": {
+          "create_pbd": "Create Private BLE Device entry"
+        },
+        "data_description": {
+          "create_pbd": "Initiate the Private BLE Device setup with this IRK."
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure BLE IRK Extractor",
         "description": "Update the BlueZ source paths or scan interval. {path_help}",
@@ -47,13 +87,20 @@
     "error": {
       "no_paths": "Enter at least one BlueZ source path.",
       "path_not_found": "None of the configured paths exist. Check the paths and try again.",
+      "adapter_required": "Select a Bluetooth adapter.",
+      "no_adapters": "No Bluetooth adapters found. Enable Bluetooth in Home Assistant first.",
+      "no_devices_found": "No discoverable devices found. Make sure the device is in pairing mode and try again.",
+      "pairing_failed": "Pairing failed. Try pairing manually in Home Assistant's Bluetooth settings, then rescan.",
       "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
       "already_configured": "BLE IRK Extractor is already configured.",
       "no_pending_setup": "The setup data was lost. Please start again.",
       "reconfigure_successful": "Reconfiguration successful.",
-      "unknown_entry": "The config entry could not be found."
+      "unknown_entry": "The config entry could not be found.",
+      "pbd_flow_started": "Private BLE Device setup started with the extracted IRK.",
+      "setup_completed": "Setup completed. The sensor will now show the extracted IRK.",
+      "no_adapters": "No Bluetooth adapters available."
     }
   },
   "options": {

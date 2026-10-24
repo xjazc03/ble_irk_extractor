@@ -1,5 +1,7 @@
 # BLE IRK Extractor
 
+> **WARNING:** This integration is meant for Home Assistant OS. Use with other Home Assistant instances at your own risk!
+
 A Home Assistant custom integration that reads **Bluetooth Low Energy Identity Resolving Keys (IRKs)** from BlueZ bond data and exposes them for use with Home Assistant's [Private BLE Device](https://www.home-assistant.io/integrations/private_ble_device/) integration.
 
 Modern phones and other BLE devices rotate their advertised addresses using Resolvable Private Addresses (RPAs). To track one reliably, Home Assistant needs the device's IRK. This integration makes those keys easy to find.
@@ -11,6 +13,7 @@ Modern phones and other BLE devices rotate their advertised addresses using Reso
 - Recursive scanner supports the original BlueZ layout, flattened files, and `*.info` files
 - Configurable rescan interval
 - **Rescan BlueZ data** button for immediate refreshes
+- **Pair new Bluetooth device** flow: discover, pair, extract IRK, and optionally create a Private BLE Device entry
 - One sensor with a friendly `keys` attribute plus per-device metadata
 - Diagnostics that redact IRK values
 - No external Python dependencies
@@ -79,17 +82,37 @@ The Home Assistant OS container cannot read `/var/lib/bluetooth` from the host. 
 
 ## Setup
 
+### Method 1: Configure BlueZ source paths (existing bonds)
+
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **BLE IRK Extractor**.
-3. Fill in:
+3. Select **Configure BlueZ source paths**.
+4. Fill in:
    - **Name** — friendly name for the extractor.
    - **Copied BlueZ folder** — usually `/config/bluez_irks`.
    - **Host BlueZ folder** — usually `/var/lib/bluetooth`; leave blank if it is not available.
    - **Rescan interval** — how often to reread the files, in minutes.
-4. If the paths exist but no keys are found yet, the flow offers **Set up anyway**. The sensor will start working once keys appear.
-5. The integration creates:
+5. If the paths exist but no keys are found yet, the flow offers **Set up anyway**. The sensor will start working once keys appear.
+6. The integration creates:
    - `sensor.ble_irk_extractor_irk_keys` (or a name based on your entry)
    - `button.ble_irk_extractor_rescan_bluez_data`
+
+### Method 2: Pair a new Bluetooth device and extract its IRK
+
+1. Go to **Settings → Devices & Services → Add Integration**.
+2. Search for **BLE IRK Extractor**.
+3. Select **Pair a new Bluetooth device and extract its IRK**.
+4. Choose the Bluetooth adapter to use for pairing.
+5. The integration will scan for discoverable devices (10 seconds). Make sure your device is in pairing mode.
+6. Select the device you want to pair from the list.
+7. Confirm the pairing. The integration will attempt to pair via Home Assistant's Bluetooth stack.
+8. After successful pairing, the integration waits a few seconds for BlueZ to write the bond record containing the IRK.
+9. The extracted IRK is displayed. You can:
+   - **Create Private BLE Device entry** — immediately start the Private BLE Device setup with this IRK.
+   - Skip this step and use the sensor attributes later.
+10. The integration creates a config entry with default paths so future rescans will pick up the bonded device.
+
+> **Note:** Pairing through Home Assistant requires Bluetooth to be enabled and working in Home Assistant. On Home Assistant OS, this works out of the box. On other installations, ensure the Bluetooth adapter is accessible and `bluetooth` integration is configured. If pairing fails, you can always pair manually via `bluetoothctl` or your OS Bluetooth settings, then use Method 1.
 
 ## Sensor attributes
 
