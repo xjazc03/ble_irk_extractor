@@ -76,8 +76,13 @@
       },
       "pairing_failed": {
         "title": "Pairing Failed",
-        "description": "Could not pair automatically with {device_name} ({device_address}). Pair manually in your system's Bluetooth settings, then rescan.",
-        "data": {}
+        "description": "Could not pair automatically with {device_name} ({device_address}). iOS and other secure devices require pairing via the host BlueZ agent (bluetoothctl). Choose how you would like to proceed:",
+        "data": {
+          "recovery_action": "Action"
+        },
+        "data_description": {
+          "recovery_action": "Choose whether to retry device discovery or switch to BlueZ host storage extraction."
+        }
       },
       "reconfigure": {
         "title": "Reconfigure BLE IRK Extractor",

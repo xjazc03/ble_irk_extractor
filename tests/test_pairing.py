@@ -19,12 +19,35 @@ from homeassistant.core import HomeAssistant
 from custom_components.ble_irk_extractor.pairing import (
     BleIrkPairingManager,
     DISCOVERY_TIMEOUT_SECONDS,
+    format_adapter_label,
 )
 from custom_components.ble_irk_extractor.bluez import IrkRecord, ScanResult
 
 
 class PairingTests(unittest.IsolatedAsyncioTestCase):
     """Test BleIrkPairingManager discovery, pairing, and extraction."""
+
+
+    def test_format_adapter_label(self) -> None:
+        # 1. iface and product distinct
+        label1 = format_adapter_label("00:11:22:33:44:55", name="hci0", product="Bluetooth Adapter", iface="hci0")
+        self.assertEqual(label1, "hci0 - Bluetooth Adapter (00:11:22:33:44:55)")
+
+        # 2. iface only
+        label2 = format_adapter_label("00:11:22:33:44:55", name="hci0", iface="hci0")
+        self.assertEqual(label2, "hci0 (00:11:22:33:44:55)")
+
+        # 3. proxy / custom name without iface
+        label3 = format_adapter_label("AA:BB:CC:DD:EE:01", name="Living Room Proxy")
+        self.assertEqual(label3, "Living Room Proxy (AA:BB:CC:DD:EE:01)")
+
+        # 4. default / active scanner fallback
+        label4 = format_adapter_label("default", name="Home Assistant Bluetooth (2 active scanners)")
+        self.assertEqual(label4, "Home Assistant Bluetooth (2 active scanners)")
+
+        # 5. Raw address fallback
+        label5 = format_adapter_label("00:11:22:33:44:55")
+        self.assertEqual(label5, "00:11:22:33:44:55")
 
     async def test_async_get_adapters_from_bluetooth_adapters(self) -> None:
         hass = HomeAssistant()

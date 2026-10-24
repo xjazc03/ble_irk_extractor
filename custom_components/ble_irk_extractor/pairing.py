@@ -40,6 +40,50 @@ BOND_WRITE_RETRIES = 3
 APPLE_MANUFACTURER_ID = 0x004c  # 76 decimal (Apple, Inc.)
 
 
+def format_adapter_label(
+    address: str,
+    name: str | None = None,
+    product: str | None = None,
+    iface: str | None = None,
+) -> str:
+    """Format a human-readable label for a Bluetooth adapter.
+
+    Formats:
+    - If iface and product/name are distinct: "{iface} - {product} ({address})"
+    - If iface and address: "{iface} ({address})"
+    - If name/product provided: "{name} ({address})"
+    - Fallback: "{address}"
+    """
+    clean_addr = address.strip() if address else ""
+    parts: list[str] = []
+
+    if iface and iface.strip():
+        c_iface = iface.strip()
+        if c_iface.lower() != clean_addr.lower():
+            parts.append(c_iface)
+
+    candidate_name = (
+        product.strip()
+        if (product and product.strip())
+        else (name.strip() if (name and name.strip()) else "")
+    )
+    if (
+        candidate_name
+        and candidate_name.lower() != clean_addr.lower()
+        and candidate_name not in parts
+    ):
+        parts.append(candidate_name)
+
+    if parts:
+        prefix = " - ".join(parts)
+        if clean_addr and clean_addr.lower() not in ("default", ""):
+            return f"{prefix} ({clean_addr})"
+        return prefix
+
+    return clean_addr or "default"
+
+
+
 def format_device_label(
     address: str,
     name: str | None = None,
@@ -99,10 +143,17 @@ class BleIrkPairingManager:
             raw_adapters = getattr(adapters_manager, "adapters", {})
             for iface, details in raw_adapters.items():
                 addr = details.get("address") or iface
-                name = details.get("product") or details.get("name") or iface
+                product = details.get("product")
+                name = details.get("name")
+                label = format_adapter_label(
+                    address=addr,
+                    name=name,
+                    product=product,
+                    iface=iface,
+                )
                 adapters_list.append({
                     "address": addr,
-                    "name": f"{name} ({addr})" if addr != name else name,
+                    "name": label,
                 })
         except ImportError:
             _LOGGER.debug("bluetooth_adapters package not installed; checking HA scanners")
@@ -143,8 +194,9 @@ class BleIrkPairingManager:
                 if legacy_adapters:
                     for adapter in legacy_adapters:
                         addr = getattr(adapter, "address", str(adapter))
-                        name = getattr(adapter, "name", None) or addr
-                        adapters_list.append({"address": addr, "name": name})
+                        name = getattr(adapter, "name", None)
+                        label = format_adapter_label(address=addr, name=name)
+                        adapters_list.append({"address": addr, "name": label})
 
         if not adapters_list:
             _LOGGER.warning(

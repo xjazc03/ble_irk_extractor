@@ -102,7 +102,7 @@ The Home Assistant OS container cannot read `/var/lib/bluetooth` from the host. 
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **BLE IRK Extractor**.
 3. Select **Pair a new Bluetooth device and extract its IRK**.
-4. Choose the Bluetooth adapter to use for pairing.
+4. Choose the Bluetooth adapter to use for pairing. Adapters display with friendly hardware names and interface identifiers (e.g., `hci0 - Bluetooth Adapter (00:11:22:33:44:55)` or proxy scanner names).
 5. The integration will scan for discoverable devices (10 seconds). Make sure your device is in pairing mode.
 6. Select the device you want to pair from the list. Discovered devices display with their friendly broadcast name (or `Apple Device` if manufacturer ID `0x004c` is detected) and signal strength in decibels (`dBm`). Entries are sorted descending by RSSI so nearby devices appear at the top.
 7. Confirm the pairing. The integration will attempt to pair via Home Assistant's Bluetooth stack.
@@ -114,7 +114,7 @@ The Home Assistant OS container cannot read `/var/lib/bluetooth` from the host. 
 
 > **Tip for Apple / iOS devices:** iPhones rotate random addresses and omit their friendly name in the background. To make an iPhone broadcast its friendly name and accept pairing requests, open **Settings → Bluetooth** on the phone and keep that screen open during the 10-second scan. Holding the phone near your Bluetooth adapter or ESPHome proxy bubbles it directly to the top of the list by signal strength.
 
-> **Note:** Pairing through Home Assistant requires Bluetooth to be enabled and working in Home Assistant. On Home Assistant OS, this works out of the box. On other installations, ensure the Bluetooth adapter is accessible and `bluetooth` integration is configured. If pairing fails, you can always pair manually via `bluetoothctl` or your OS Bluetooth settings, then use Method 1.
+> **Note:** Pairing through Home Assistant requires Bluetooth to be enabled and working in Home Assistant. On Home Assistant OS, this works out of the box. If pairing fails or the target device rejects unsolicited pairing (common on iOS devices requiring host-level SSP interactive authorization), the integration provides a recovery screen with options to retry discovery or switch directly to BlueZ host storage extraction.
 
 ## Sensor attributes
 

@@ -134,12 +134,17 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res_no_adapters["type"], "abort")
             self.assertEqual(res_no_adapters["reason"], "no_adapters")
 
-        # Adapters present -> show form
-        adapters = [{"address": "00:11:22:33:44:55", "name": "hci0"}]
+        # Adapters present -> show form with {address: label} mapping
+        adapters = [{"address": "00:11:22:33:44:55", "name": "hci0 - Bluetooth Adapter (00:11:22:33:44:55)"}]
         with patch("custom_components.ble_irk_extractor.config_flow.BleIrkPairingManager.async_get_adapters", new=AsyncMock(return_value=adapters)):
             res_adapters = await flow.async_step_pair_device()
             self.assertEqual(res_adapters["type"], "form")
             self.assertEqual(res_adapters["step_id"], "pair_device")
+            schema = res_adapters["data_schema"].schema
+            self.assertEqual(
+                schema["adapter_address"].container,
+                {"00:11:22:33:44:55": "hci0 - Bluetooth Adapter (00:11:22:33:44:55)"},
+            )
 
         # Adapter selected
         with patch.object(flow, "async_step_device_selection", new=AsyncMock(return_value={"type": "form", "step_id": "device_selection"})):
@@ -211,11 +216,17 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_confirm_form["type"], "form")
         self.assertEqual(res_confirm_form["step_id"], "pair_confirm")
 
-        # Confirm pairing fails
+        # Confirm pairing fails -> transitions to pairing_failed form
         with patch("custom_components.ble_irk_extractor.config_flow.BleIrkPairingManager.async_pair_device", new=AsyncMock(return_value=False)):
             res_fail = await flow.async_step_pairing()
             self.assertEqual(res_fail["type"], "form")
             self.assertEqual(res_fail["step_id"], "pairing_failed")
+
+        # Confirm pairing exception -> handled safely and transitions to pairing_failed
+        with patch("custom_components.ble_irk_extractor.config_flow.BleIrkPairingManager.async_pair_device", new=AsyncMock(side_effect=RuntimeError("D-Bus down"))):
+            res_exc = await flow.async_step_pairing()
+            self.assertEqual(res_exc["type"], "form")
+            self.assertEqual(res_exc["step_id"], "pairing_failed")
 
         # Confirm pairing succeeds and finds IRK
         rec = IrkRecord("Phone", "AA:BB:CC:DD:EE:01", "0" * 31 + "1", "/var/lib/bluetooth", "/var/lib/bluetooth/info")
@@ -224,6 +235,30 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res_pair_ok["type"], "form")
             self.assertEqual(res_pair_ok["step_id"], "pairing_result")
             self.assertEqual(flow._last_irk_record, rec)
+
+    async def test_step_pairing_failed_recovery(self) -> None:
+        flow = BleIrkExtractorConfigFlow()
+        flow._pairing_device = "AA:BB:CC:DD:EE:01"
+        flow._pairing_device_name = "Josh's iPhone"
+
+        # Show recovery form
+        res_form = await flow.async_step_pairing_failed()
+        self.assertEqual(res_form["type"], "form")
+        self.assertEqual(res_form["step_id"], "pairing_failed")
+        schema = res_form["data_schema"].schema
+        self.assertIn("recovery_action", schema)
+
+        # Recovery action: retry_selection
+        with patch.object(flow, "async_step_device_selection", new=AsyncMock(return_value={"type": "form", "step_id": "device_selection"})) as mock_select:
+            res_retry = await flow.async_step_pairing_failed({"recovery_action": "retry_selection"})
+            mock_select.assert_called_once()
+            self.assertEqual(res_retry["step_id"], "device_selection")
+
+        # Recovery action: configure_paths
+        with patch.object(flow, "async_step_paths", new=AsyncMock(return_value={"type": "form", "step_id": "paths"})) as mock_paths:
+            res_paths = await flow.async_step_pairing_failed({"recovery_action": "configure_paths"})
+            mock_paths.assert_called_once()
+            self.assertEqual(res_paths["step_id"], "paths")
 
     async def test_step_pairing_result(self) -> None:
         flow = BleIrkExtractorConfigFlow()

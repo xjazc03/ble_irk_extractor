@@ -45,6 +45,11 @@ _ACTION_OPTIONS = {
     "pair_device": "Pair a new Bluetooth device and extract its IRK",
 }
 
+_RECOVERY_OPTIONS = {
+    "retry_selection": "Retry device discovery / selection",
+    "configure_paths": "Configure BlueZ source paths (host extraction)",
+}
+
 
 def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     """Build the setup/options form schema."""
@@ -227,13 +232,16 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not adapters:
             return self.async_abort(reason="no_adapters")
 
+        adapter_options = {
+            a["address"]: a.get("name", a["address"])
+            for a in adapters
+        }
+
         return self.async_show_form(
             step_id="pair_device",
             data_schema=vol.Schema(
                 {
-                    vol.Required("adapter_address"): vol.In(
-                        [a["address"] for a in adapters]
-                    ),
+                    vol.Required("adapter_address"): vol.In(adapter_options),
                 }
             ),
             errors=errors,
@@ -327,18 +335,14 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         manager = BleIrkPairingManager(self.hass)
         device_address = self._pairing_device or ""
 
-        success = await manager.async_pair_device(device_address)
+        try:
+            success = await manager.async_pair_device(device_address)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unexpected exception pairing with %s", device_address)
+            success = False
+
         if not success:
-            # Show manual pairing instructions
-            return self.async_show_form(
-                step_id="pairing_failed",
-                data_schema=vol.Schema({}),
-                errors={"base": "pairing_failed"},
-                description_placeholders={
-                    "device_address": str(device_address),
-                    "device_name": str(self._pairing_device_name or device_address),
-                },
-            )
+            return await self.async_step_pairing_failed()
 
         # Wait for BlueZ to write the bond info file with the IRK.
         entry = self.hass.config_entries.async_get_entry(
@@ -381,6 +385,32 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "device_address": str(device_address),
                 "device_name": str(self._pairing_device_name or device_address),
                 "irk": str(irk_record.irk),
+            },
+        )
+
+    async def async_step_pairing_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle pairing failure and present recovery options."""
+        if user_input is not None:
+            action = user_input.get("recovery_action")
+            if action == "configure_paths":
+                return await self.async_step_paths()
+            return await self.async_step_device_selection()
+
+        return self.async_show_form(
+            step_id="pairing_failed",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "recovery_action", default="retry_selection"
+                    ): vol.In(_RECOVERY_OPTIONS),
+                }
+            ),
+            errors={"base": "pairing_failed"},
+            description_placeholders={
+                "device_address": str(self._pairing_device or ""),
+                "device_name": str(self._pairing_device_name or self._pairing_device or ""),
             },
         )
 
