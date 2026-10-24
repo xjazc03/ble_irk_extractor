@@ -127,7 +127,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if action == "pair_device":
                 return await self.async_step_pair_device()
             if action == "configure_paths":
-                return await self.async_step_paths(user_input)
+                return await self.async_step_paths()
 
         return self.async_show_form(
             step_id="user",
@@ -237,7 +237,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-            description_placeholders={"adapter_count": len(adapters)},
+            description_placeholders={"adapter_count": str(len(adapters))},
         )
 
     async def async_step_device_selection(
@@ -261,7 +261,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # First call: discover devices
         manager = BleIrkPairingManager(self.hass)
-        devices = await manager.async_discover_devices(self._pairing_adapter)
+        devices = await manager.async_discover_devices(self._pairing_adapter or "")
 
         self._discovered_devices = [
             {
@@ -283,7 +283,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     }
                 ),
                 errors={"base": "no_devices_found"},
-                description={"start_timeout": DISCOVERY_TIMEOUT_SECONDS},
+                description_placeholders={"start_timeout": str(DISCOVERY_TIMEOUT_SECONDS)},
             )
 
         return self.async_show_form(
@@ -295,7 +295,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
-            description={"start_timeout": DISCOVERY_TIMEOUT_SECONDS},
+            description_placeholders={"start_timeout": str(DISCOVERY_TIMEOUT_SECONDS)},
         )
 
     async def async_step_pair_confirm(
@@ -312,9 +312,9 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required("confirm", default=True): bool,
                 }
             ),
-            description={
-                "device_address": self._pairing_device,
-                "device_name": self._pairing_device_name,
+            description_placeholders={
+                "device_address": str(self._pairing_device or ""),
+                "device_name": str(self._pairing_device_name or self._pairing_device or ""),
             },
         )
 
@@ -322,10 +322,8 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Perform the pairing and wait for the BlueZ bond record with IRK."""
-        # This step is called with user_input=None when entered from pair_confirm.
-        # It does the blocking pairing work, then shows the pairing_result form.
         manager = BleIrkPairingManager(self.hass)
-        device_address = self._pairing_device
+        device_address = self._pairing_device or ""
 
         success = await manager.async_pair_device(device_address)
         if not success:
@@ -334,9 +332,9 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 step_id="pairing_failed",
                 data_schema=vol.Schema({}),
                 errors={"base": "pairing_failed"},
-                description={
-                    "device_address": device_address,
-                    "device_name": self._pairing_device_name,
+                description_placeholders={
+                    "device_address": str(device_address),
+                    "device_name": str(self._pairing_device_name or device_address),
                 },
             )
 
@@ -361,11 +359,10 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         ): bool,
                     }
                 ),
-                description={
-                    "device_address": device_address,
-                    "device_name": self._pairing_device_name,
-                    "irk": "IRK not found – BlueZ may not have written it yet. "
-                           "Enable create_pbd to proceed with manual entry.",
+                description_placeholders={
+                    "device_address": str(device_address),
+                    "device_name": str(self._pairing_device_name or device_address),
+                    "irk": "IRK not found - BlueZ may not have written it yet.",
                 },
             )
 
@@ -378,10 +375,10 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ): bool,
                 }
             ),
-            description={
-                "device_address": device_address,
-                "device_name": self._pairing_device_name,
-                "irk": irk_record.irk,
+            description_placeholders={
+                "device_address": str(device_address),
+                "device_name": str(self._pairing_device_name or device_address),
+                "irk": str(irk_record.irk),
             },
         )
 
@@ -394,6 +391,9 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         irk_record = self._last_irk_record
         self._last_irk_record = None
+
+        user_input = user_input or {}
+        create_pbd = bool(user_input.get("create_pbd"))
 
         # Create config entry if we don't have one yet (initial setup via pairing)
         entry = self.hass.config_entries.async_get_entry(
@@ -409,11 +409,23 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HOST_PATH: default_paths[1],
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             })
-            self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
-            return self.async_abort(reason="pbd_flow_started" if user_input.get("create_pbd") else "setup_completed")
+            if create_pbd:
+                try:
+                    await self.hass.config_entries.flow.async_init(
+                        "private_ble_device",
+                        context={"source": config_entries.SOURCE_USER},
+                        data={
+                            "address": irk_record.address,
+                            "irk": irk_record.irk,
+                            "name": irk_record.display_name,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Failed to initiate private_ble_device flow")
+            return self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
 
         # Existing entry: update if needed, optionally start PBD flow
-        if user_input is not None and user_input.get("create_pbd"):
+        if create_pbd:
             try:
                 await self.hass.config_entries.flow.async_init(
                     "private_ble_device",
@@ -427,7 +439,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Failed to initiate private_ble_device flow")
 
-        return self.async_abort(reason="pbd_flow_started" if user_input.get("create_pbd") else "setup_completed")
+        return self.async_abort(reason="pbd_flow_started" if create_pbd else "setup_completed")
 
     # ------------------------------------------------------------------
     # Reconfigure
@@ -487,6 +499,7 @@ class BleIrkExtractorOptionsFlow(config_entries.OptionsFlow):
     def __init__(
         self, entry: config_entries.ConfigEntry | None = None
     ) -> None:
+        super().__init__()
         self._entry = entry
         if entry is not None:
             try:

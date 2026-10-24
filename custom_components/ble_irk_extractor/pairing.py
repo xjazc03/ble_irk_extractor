@@ -6,8 +6,8 @@ Resolving Key (IRK) from the BlueZ bond record that BlueZ creates after a
 successful bond.
 
 Pairing through BlueZ requires an authentication agent (PIN, passkey, or
-just-works confirmation).  Home Assistant's Bluetooth integration handles the
-agent side when its public pairing API is available.  When it is not, the
+just-works confirmation). Home Assistant's Bluetooth integration handles the
+agent side when its public pairing API is available. When it is not, the
 integration falls back to guiding the user to pair manually through the
 operating system's Bluetooth settings.
 """
@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # How long to scan for discoverable devices.
 DISCOVERY_TIMEOUT = 10
+DISCOVERY_TIMEOUT_SECONDS = DISCOVERY_TIMEOUT
 # After a successful bond, BlueZ may take a moment to write the bond record.
 BOND_WRITE_DELAY = 3
 BOND_WRITE_RETRIES = 3
@@ -68,7 +69,7 @@ class BleIrkPairingManager:
 
     async def async_discover_devices(
         self, adapter_address: str
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         """Scan for discoverable Bluetooth devices on an adapter."""
         self._discovered = {}
 
@@ -98,7 +99,7 @@ class BleIrkPairingManager:
         )
 
         try:
-            await asyncio.sleep(DISCOVERY_TIMEOUT)
+            await asyncio.sleep(DISCOVERY_TIMEOUT_SECONDS)
         finally:
             await self.async_stop_discovery()
 
@@ -124,7 +125,7 @@ class BleIrkPairingManager:
     async def async_pair_device(self, device_address: str) -> bool:
         """Attempt to pair with a Bluetooth device.
 
-        Returns True if pairing succeeded.  Falls back to False when Home
+        Returns True if pairing succeeded. Falls back to False when Home
         Assistant does not expose a public pairing API, in which case the
         caller should guide the user to pair manually.
         """
@@ -144,7 +145,7 @@ class BleIrkPairingManager:
             _LOGGER.exception("Pairing failed for %s", device_address)
             return False
 
-    async def async_extract_irk_for_device(
+    def extract_irk_for_device(
         self, device_address: str, paths: list[str]
     ) -> IrkRecord | None:
         """Return the IRK record for a device from BlueZ bond data."""
@@ -162,6 +163,14 @@ class BleIrkPairingManager:
 
         return None
 
+    async def async_extract_irk_for_device(
+        self, device_address: str, paths: list[str]
+    ) -> IrkRecord | None:
+        """Return the IRK record for a device from BlueZ bond data asynchronously."""
+        return await self.hass.async_add_executor_job(
+            self.extract_irk_for_device, device_address, paths
+        )
+
     async def async_wait_for_bond_record(
         self,
         device_address: str,
@@ -170,7 +179,7 @@ class BleIrkPairingManager:
         """Poll BlueZ bond data until the paired device's IRK appears."""
         for _attempt in range(BOND_WRITE_RETRIES):
             record = await self.hass.async_add_executor_job(
-                self.async_extract_irk_for_device, device_address, paths
+                self.extract_irk_for_device, device_address, paths
             )
             if record is not None:
                 return record

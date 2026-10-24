@@ -2,7 +2,14 @@
   "config": {
     "step": {
       "user": {
-        "title": "BLE IRK Extractor",
+        "title": "BLE IRK Extractor Setup",
+        "description": "Choose whether to configure BlueZ file paths to scan for existing IRKs, or pair a new Bluetooth device directly to extract its IRK.",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "paths": {
+        "title": "Configure BlueZ Paths",
         "description": "Point the integration at the BlueZ bond data on your Home Assistant host. {path_help}",
         "data": {
           "name": "Name",
@@ -29,7 +36,7 @@
       },
       "pair_device": {
         "title": "Pair a new Bluetooth device",
-        "description": "Select the Bluetooth adapter you want to pair through. Make sure the device is discoverable.",
+        "description": "Select the Bluetooth adapter you want to pair through ({adapter_count} available). Make sure the device is discoverable.",
         "data": {
           "adapter_address": "Bluetooth adapter"
         },
@@ -39,7 +46,7 @@
       },
       "device_selection": {
         "title": "Select a Bluetooth device",
-        "description": "Choose the device you want to pair with from the discovered list. This scan lasts up to 10 seconds.",
+        "description": "Choose the device you want to pair with from the discovered list. This scan lasts up to {start_timeout} seconds.",
         "data": {
           "device_address": "Bluetooth device"
         },
@@ -59,13 +66,18 @@
       },
       "pairing_result": {
         "title": "Pairing complete",
-        "description": "The pairing with {device_name} finished. The Identity Resolving Key (IRK) is shown below. You can use it to set up Home Assistant's Private BLE Device integration.",
+        "description": "The pairing with {device_name} ({device_address}) finished. Extracted IRK: {irk}. You can use it to set up Home Assistant's Private BLE Device integration.",
         "data": {
           "create_pbd": "Create Private BLE Device entry"
         },
         "data_description": {
           "create_pbd": "Initiate the Private BLE Device setup with this IRK."
         }
+      },
+      "pairing_failed": {
+        "title": "Pairing Failed",
+        "description": "Could not pair automatically with {device_name} ({device_address}). Pair manually in your system's Bluetooth settings, then rescan.",
+        "data": {}
       },
       "reconfigure": {
         "title": "Reconfigure BLE IRK Extractor",

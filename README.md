@@ -197,7 +197,7 @@ IRKs are long-lived identity secrets. Anyone who has a device's IRK can track th
 
 ## Development
 
-Run the scanner tests with:
+Run the unit test suite with:
 
 ```bash
 python -m unittest discover -s tests -v

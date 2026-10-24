@@ -6,3 +6,4 @@ venv/
 .coverage
 htmlcov/
 .DS_Store
+COMPLETE_SOURCE_EXPORT.md
