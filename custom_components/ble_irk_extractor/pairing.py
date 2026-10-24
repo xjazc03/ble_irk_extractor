@@ -83,7 +83,6 @@ def format_adapter_label(
     return clean_addr or "default"
 
 
-
 def format_device_label(
     address: str,
     name: str | None = None,
@@ -117,7 +116,6 @@ def format_device_label(
     return base
 
 
-
 class BleIrkPairingManager:
     """Manage Bluetooth discovery, pairing, and IRK extraction."""
 
@@ -125,6 +123,137 @@ class BleIrkPairingManager:
         self.hass = hass
         self._discovered: dict[str, BluetoothServiceInfoBleak] = {}
         self._unsub: Any = None
+        self.adapter_properties: dict[str, dict[str, Any]] = {}
+        self._pairing_timeout_task: asyncio.Task | None = None
+        self._pairing_mode_adapter: str | None = None
+
+    def set_adapter_pairing_mode(
+        self,
+        adapter_address: str | None = None,
+        enabled: bool = True,
+        timeout: int = 180,
+    ) -> bool:
+        """Set Discoverable and Pairable properties immediately in memory and dispatch background update."""
+        adapter_key = adapter_address or "default"
+        self.adapter_properties[adapter_key] = {
+            "Discoverable": enabled,
+            "Pairable": enabled,
+            "DiscoverableTimeout": timeout if enabled else 0,
+        }
+
+        if self._pairing_timeout_task and not self._pairing_timeout_task.done():
+            self._pairing_timeout_task.cancel()
+            self._pairing_timeout_task = None
+
+        if enabled:
+            self._pairing_mode_adapter = adapter_key
+
+            async def _auto_revert() -> None:
+                try:
+                    await asyncio.sleep(timeout)
+                    await self.async_disable_pairing_mode(adapter_key)
+                except asyncio.CancelledError:
+                    pass
+
+            try:
+                if hasattr(self.hass, "async_create_background_task"):
+                    self._pairing_timeout_task = self.hass.async_create_background_task(
+                        _auto_revert(), name="ble_irk_pairing_timeout"
+                    )
+                else:
+                    self._pairing_timeout_task = asyncio.create_task(_auto_revert())
+            except Exception:  # noqa: BLE001
+                self._pairing_timeout_task = asyncio.create_task(_auto_revert())
+        else:
+            self._pairing_mode_adapter = None
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._async_apply_bluez_properties(
+                    adapter_address or "", discoverable=enabled, pairable=enabled, timeout=timeout
+                )
+            )
+        except RuntimeError:
+            pass
+
+        return True
+
+    def disable_pairing_mode(self, adapter_address: str | None = None) -> bool:
+        """Disable pairing mode synchronously."""
+        return self.set_adapter_pairing_mode(adapter_address, enabled=False, timeout=0)
+
+    async def async_set_adapter_pairing_mode(
+        self,
+        adapter_address: str | None = None,
+        enabled: bool = True,
+        timeout: int = 180,
+    ) -> bool:
+        """Set Discoverable and Pairable properties on the Bluetooth adapter asynchronously."""
+        self.set_adapter_pairing_mode(adapter_address, enabled=enabled, timeout=timeout)
+        await self._async_apply_bluez_properties(
+            adapter_address or "", discoverable=enabled, pairable=enabled, timeout=timeout
+        )
+        return True
+
+    async def async_enable_pairing_mode(
+        self, adapter_address: str | None = None, timeout: int = 180
+    ) -> bool:
+        """Enable pairing and discovery mode on the adapter."""
+        return await self.async_set_adapter_pairing_mode(
+            adapter_address, enabled=True, timeout=timeout
+        )
+
+    async def async_disable_pairing_mode(
+        self, adapter_address: str | None = None
+    ) -> bool:
+        """Disable pairing and discovery mode on the adapter."""
+        return await self.async_set_adapter_pairing_mode(
+            adapter_address, enabled=False, timeout=0
+        )
+
+    async def _async_apply_bluez_properties(
+        self,
+        adapter: str,
+        discoverable: bool,
+        pairable: bool,
+        timeout: int = 180,
+    ) -> None:
+        """Attempt to set adapter properties via dbus_fast or bluetoothctl."""
+        # 1. dbus_fast
+        try:
+            from dbus_fast.aio import MessageBus
+            from dbus_fast import BusType, Variant
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            iface_name = adapter if adapter.startswith("hci") else "hci0"
+            adapter_path = f"/org/bluez/{iface_name}"
+            introspection = await bus.introspect("org.bluez", adapter_path)
+            obj = bus.get_proxy_object("org.bluez", adapter_path, introspection)
+            props = obj.get_interface("org.freedesktop.DBus.Properties")
+            await props.call_set("org.bluez.Adapter1", "DiscoverableTimeout", Variant("u", timeout if discoverable else 0))
+            await props.call_set("org.bluez.Adapter1", "Discoverable", Variant("b", discoverable))
+            await props.call_set("org.bluez.Adapter1", "PairableTimeout", Variant("u", timeout if pairable else 0))
+            await props.call_set("org.bluez.Adapter1", "Pairable", Variant("b", pairable))
+            return
+        except ImportError:
+            pass
+        except Exception as err:
+            _LOGGER.debug("Could not set adapter properties via dbus_fast: %s", err)
+
+        # 2. bluetoothctl fallback
+        try:
+            disc_cmd = f"discoverable {'on' if discoverable else 'off'}"
+            pair_cmd = f"pairable {'on' if pairable else 'off'}"
+            commands = f"{disc_cmd}\n{pair_cmd}\nexit\n".encode()
+            proc = await asyncio.create_subprocess_exec(
+                "bluetoothctl",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(input=commands), timeout=2.0)
+        except Exception as err:
+            _LOGGER.debug("Could not set adapter properties via bluetoothctl: %s", err)
 
     async def async_get_adapters(self) -> list[dict[str, str]]:
         """Return available Bluetooth adapters.

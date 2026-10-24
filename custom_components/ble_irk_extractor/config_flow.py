@@ -1,22 +1,24 @@
-"""Config and options flows for the BLE IRK Extractor integration."""
+"""Config flow for the BLE IRK Extractor integration."""
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
+
 from homeassistant import config_entries
+try:
+    from homeassistant.config_entries import ConfigFlowResult
+except ImportError:
+    ConfigFlowResult = dict[str, Any]
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
-try:  # Home Assistant >= 2024.4
-    from homeassistant.config_entries import ConfigFlowResult
-except ImportError:  # pragma: no cover - older cores
-    ConfigFlowResult = Any  # type: ignore[misc, assignment]
-
-from .bluez import scan_paths
+from .bluez import IrkRecord, format_irk_label, scan_paths
 from .const import (
+    COMMAND_COPY_BLUEZ,
     CONF_COPIED_PATH,
     CONF_HOST_PATH,
     CONF_NAME,
@@ -25,35 +27,728 @@ from .const import (
     DEFAULT_COPIED_PATH,
     DEFAULT_HOST_PATH,
     DEFAULT_NAME,
+    DEFAULT_PAIRING_TIMEOUT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
-from .pairing import BleIrkPairingManager, DISCOVERY_TIMEOUT_SECONDS
+from .pairing import (
+    BleIrkPairingManager,
+    format_adapter_label,
+    format_device_label,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-_PATH_HELP = (
-    "The integration checks both folders. On Home Assistant OS, copy the "
-    "host's BlueZ data into /config/bluez_irks first; the host path is only "
-    "readable when the integration runs directly on the BlueZ machine."
-)
-
 _ACTION_OPTIONS = {
-    "configure_paths": "Configure BlueZ source paths",
-    "pair_device": "Pair a new Bluetooth device and extract its IRK",
-}
-
-_RECOVERY_OPTIONS = {
-    "retry_selection": "Retry device discovery / selection",
-    "configure_paths": "Configure BlueZ source paths (host extraction)",
+    "select_irk": "Select IRK Key",
+    "add_irk": "Add IRK Key",
+    "extract_irk": "Extract IRK Key",
 }
 
 
-def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    """Build the setup/options form schema."""
-    defaults = defaults or {}
+def _clean_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Strip whitespace from configured paths and normalize types."""
+    cleaned = dict(data)
+    for key in (CONF_NAME, CONF_COPIED_PATH, CONF_HOST_PATH):
+        if key in cleaned and isinstance(cleaned[key], str):
+            cleaned[key] = cleaned[key].strip()
+    return cleaned
+
+
+def _paths(data: dict[str, Any]) -> list[str]:
+    """Return the candidate paths configured in the flow."""
+    return [
+        str(data[key]).strip()
+        for key in (CONF_COPIED_PATH, CONF_HOST_PATH)
+        if data.get(key) and str(data[key]).strip()
+    ]
+
+
+class BleIrkExtractorConfigFlow(
+    config_entries.ConfigFlow, domain=DOMAIN
+):
+    """Handle a config flow for BLE IRK Extractor."""
+
+    VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the flow."""
+        super().__init__()
+        self._pending_data: dict[str, Any] | None = None
+        self._pairing_adapter: str | None = None
+        self._pairing_manager: BleIrkPairingManager | None = None
+        self._discovered_devices: list[dict[str, Any]] = []
+        self._last_irk_record: IrkRecord | None = None
+        self._scanned_irk_records: list[IrkRecord] = []
+
+    def _get_pairing_manager(self) -> BleIrkPairingManager:
+        """Return the pairing manager instance."""
+        if self._pairing_manager is None:
+            self._pairing_manager = BleIrkPairingManager(self.hass)
+        return self._pairing_manager
+
+    def async_abort(self, *, reason: str, **kwargs: Any) -> ConfigFlowResult:
+        """Ensure adapter pairing mode is reverted if the flow is aborted."""
+        if self._pairing_manager is not None:
+            self._pairing_manager.disable_pairing_mode(self._pairing_adapter)
+        return super().async_abort(reason=reason, **kwargs)
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Main setup entry step offering 3 primary paths."""
+        if user_input is not None:
+            action = user_input.get("action")
+            if action == "select_irk":
+                return await self.async_step_select_irk()
+            if action == "add_irk":
+                return await self.async_step_add_irk()
+            if action == "extract_irk":
+                return await self.async_step_extract_irk()
+            # Legacy actions
+            if action == "configure_paths":
+                return await self.async_step_paths()
+            if action == "pair_device":
+                return await self.async_step_pair_device()
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("action", default="select_irk"): vol.In(
+                        _ACTION_OPTIONS
+                    ),
+                }
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Path 1: Select IRK Key
+    # ------------------------------------------------------------------
+
+    async def async_step_select_irk(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select an IRK from scanned BlueZ records and pass to private_ble_device."""
+        entry = self.hass.config_entries.async_get_entry(
+            self.context.get("entry_id", "")
+        )
+        paths = _paths(entry.data) if entry else [DEFAULT_COPIED_PATH, DEFAULT_HOST_PATH]
+        result = await self.hass.async_add_executor_job(scan_paths, paths)
+
+        if not result.records:
+            if user_input is not None and user_input.get("retry"):
+                return await self.async_step_select_irk()
+            return self.async_show_form(
+                step_id="select_irk",
+                data_schema=vol.Schema(
+                    {
+                        vol.Optional("retry", default=True): bool,
+                    }
+                ),
+                errors={"base": "no_irks_found"},
+                description_placeholders={
+                    "copy_command": COMMAND_COPY_BLUEZ,
+                    "paths": ", ".join(paths),
+                },
+            )
+
+        # Sort by mtime descending (most recent first)
+        records_by_mtime = sorted(
+            result.records, key=lambda r: getattr(r, "mtime", 0.0), reverse=True
+        )
+        self._scanned_irk_records = records_by_mtime
+
+        device_options = {
+            r.irk: format_irk_label(r) for r in records_by_mtime
+        }
+
+        if user_input is not None:
+            selected = user_input.get("selected_device") or user_input.get("selected_irk")
+            chosen = next(
+                (
+                    r
+                    for r in records_by_mtime
+                    if r.irk == selected or r.address == selected
+                ),
+                None,
+            )
+            if chosen is not None:
+                try:
+                    await self.hass.config_entries.flow.async_init(
+                        "private_ble_device",
+                        context={"source": config_entries.SOURCE_USER},
+                        data={
+                            "address": chosen.address or "",
+                            "irk": chosen.irk,
+                            "name": chosen.display_name,
+                        },
+                    )
+                except Exception:
+                    _LOGGER.exception("Failed to initiate private_ble_device flow")
+
+                if entry is None:
+                    await self.async_set_unique_id(DOMAIN)
+                    self._abort_if_unique_id_configured()
+                    entry_data = _clean_data({
+                        CONF_NAME: DEFAULT_NAME,
+                        CONF_COPIED_PATH: DEFAULT_COPIED_PATH,
+                        CONF_HOST_PATH: DEFAULT_HOST_PATH,
+                        CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                    })
+                    return self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
+                return self.async_abort(reason="pbd_flow_started")
+
+        return self.async_show_form(
+            step_id="select_irk",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "selected_device", default=records_by_mtime[0].irk
+                    ): vol.In(device_options),
+                }
+            ),
+            description_placeholders={
+                "device_count": str(len(records_by_mtime)),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Path 2: Add IRK Key (Manual input)
+    # ------------------------------------------------------------------
+
+    async def async_step_add_irk(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manually supply an IRK and provision a Private BLE Device."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            name = str(user_input.get("name") or "").strip()
+            raw_irk = str(user_input.get("irk") or "")
+            clean_irk = re.sub(r"[\s:\-]", "", raw_irk).upper()
+
+            if (
+                len(clean_irk) != 32
+                or not re.fullmatch(r"^[0-9A-F]{32}$", clean_irk)
+                or set(clean_irk) == {"0"}
+            ):
+                errors["irk"] = "invalid_irk_format"
+                errors["base"] = "invalid_irk_format"
+            else:
+                device_name = name or "Personal BLE Device"
+                try:
+                    await self.hass.config_entries.flow.async_init(
+                        "private_ble_device",
+                        context={"source": config_entries.SOURCE_USER},
+                        data={
+                            "address": "",
+                            "irk": clean_irk,
+                            "name": device_name,
+                        },
+                    )
+                except Exception:
+                    _LOGGER.exception("Failed to initiate private_ble_device flow")
+
+                entry = self.hass.config_entries.async_get_entry(
+                    self.context.get("entry_id", "")
+                )
+                if entry is None:
+                    await self.async_set_unique_id(DOMAIN)
+                    self._abort_if_unique_id_configured()
+                    entry_data = _clean_data({
+                        CONF_NAME: DEFAULT_NAME,
+                        CONF_COPIED_PATH: DEFAULT_COPIED_PATH,
+                        CONF_HOST_PATH: DEFAULT_HOST_PATH,
+                        CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                    })
+                    return self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
+                return self.async_abort(reason="pbd_flow_started")
+
+        return self.async_show_form(
+            step_id="add_irk",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("name", default="Personal BLE Device"): selector.TextSelector(),
+                    vol.Required("irk"): selector.TextSelector(),
+                }
+            ),
+            errors=errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Path 3: Extract IRK Key (Pairing Mode + Terminal Sync Card)
+    # ------------------------------------------------------------------
+
+    async def async_step_extract_irk(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Enable pairing mode on the adapter and wait for phone inbound pairing."""
+        manager = self._get_pairing_manager()
+
+        if self._pairing_adapter is None:
+            adapters = await manager.async_get_adapters()
+            if adapters:
+                self._pairing_adapter = adapters[0]["address"]
+            else:
+                self._pairing_adapter = "default"
+
+        if user_input is not None:
+            await manager.async_disable_pairing_mode(self._pairing_adapter)
+            return await self.async_step_extract_sync()
+
+        await manager.async_enable_pairing_mode(
+            self._pairing_adapter, timeout=DEFAULT_PAIRING_TIMEOUT
+        )
+
+        return self.async_show_form(
+            step_id="extract_irk",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("confirm_paired", default=True): bool,
+                }
+            ),
+            description_placeholders={
+                "timeout": str(DEFAULT_PAIRING_TIMEOUT),
+                "adapter": str(self._pairing_adapter or "default"),
+            },
+        )
+
+    async def async_step_extract_sync(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Display the terminal sync command card; does NOT trigger private_ble_device."""
+        manager = self._get_pairing_manager()
+        await manager.async_disable_pairing_mode(self._pairing_adapter)
+
+        if user_input is not None:
+            entry = self.hass.config_entries.async_get_entry(
+                self.context.get("entry_id", "")
+            )
+            if entry is None:
+                await self.async_set_unique_id(DOMAIN)
+                self._abort_if_unique_id_configured()
+                entry_data = _clean_data({
+                    CONF_NAME: DEFAULT_NAME,
+                    CONF_COPIED_PATH: DEFAULT_COPIED_PATH,
+                    CONF_HOST_PATH: DEFAULT_HOST_PATH,
+                    CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                })
+                return self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
+            return self.async_abort(reason="setup_completed")
+
+        return self.async_show_form(
+            step_id="extract_sync",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "copy_command": COMMAND_COPY_BLUEZ,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Legacy & Reconfiguration Flow Steps
+    # ------------------------------------------------------------------
+
+    async def async_step_paths(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure directory paths to scan for BlueZ IRKs."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            data = _clean_data(user_input)
+            paths = _paths(data)
+
+            if not paths:
+                errors["base"] = "no_paths"
+            else:
+                result = await self.hass.async_add_executor_job(
+                    scan_paths, paths
+                )
+                if not result.scanned_paths and not user_input.get(
+                    CONF_SETUP_ANYWAY, False
+                ):
+                    errors["base"] = "no_valid_paths"
+                    self._pending_data = data
+                    return self.async_show_form(
+                        step_id="paths",
+                        data_schema=self._schema_with_override(data),
+                        errors=errors,
+                        description_placeholders={
+                            "copied_path": data.get(CONF_COPIED_PATH, ""),
+                            "host_path": data.get(CONF_HOST_PATH, ""),
+                        },
+                    )
+
+                await self.async_set_unique_id(DOMAIN)
+                self._abort_if_unique_id_configured()
+
+                title = data.get(CONF_NAME) or DEFAULT_NAME
+                return self.async_create_entry(title=title, data=data)
+
+        defaults = self._pending_data or {
+            CONF_NAME: DEFAULT_NAME,
+            CONF_COPIED_PATH: DEFAULT_COPIED_PATH,
+            CONF_HOST_PATH: DEFAULT_HOST_PATH,
+            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+        }
+        return self.async_show_form(
+            step_id="paths",
+            data_schema=_paths_schema(defaults),
+            errors=errors,
+            description_placeholders={
+                "copied_path": DEFAULT_COPIED_PATH,
+                "host_path": DEFAULT_HOST_PATH,
+            },
+        )
+
+    async def async_step_pair_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Discover and pair with a Bluetooth device to extract its IRK."""
+        errors: dict[str, str] = {}
+        manager = self._get_pairing_manager()
+
+        if user_input is not None:
+            self._pairing_adapter = user_input.get("adapter")
+            return await self.async_step_discover_devices()
+
+        adapters = await manager.async_get_adapters()
+        if not adapters:
+            return self.async_abort(reason="no_adapters")
+
+        if len(adapters) == 1:
+            self._pairing_adapter = adapters[0]["address"]
+            return await self.async_step_discover_devices()
+
+        adapter_options = {a["address"]: a["name"] for a in adapters}
+        return self.async_show_form(
+            step_id="pair_device",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("adapter"): vol.In(adapter_options),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_discover_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Scan for devices on the selected adapter."""
+        errors: dict[str, str] = {}
+        manager = self._get_pairing_manager()
+
+        if user_input is not None:
+            device_address = user_input["device"]
+            return await self.async_step_pair_confirm({"device": device_address})
+
+        adapter = self._pairing_adapter or "default"
+        self._discovered_devices = await manager.async_discover_devices(adapter)
+
+        if not self._discovered_devices:
+            return self.async_show_form(
+                step_id="discover_devices",
+                data_schema=vol.Schema(
+                    {
+                        vol.Optional("retry", default=True): bool,
+                    }
+                ),
+                errors={"base": "no_devices_found"},
+            )
+
+        device_options = {
+            d["address"]: d["label"] for d in self._discovered_devices
+        }
+        return self.async_show_form(
+            step_id="discover_devices",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("device"): vol.In(device_options),
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_pair_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm and execute pairing with the chosen device."""
+        errors: dict[str, str] = {}
+        device_address = (user_input or {}).get("device", "")
+        manager = self._get_pairing_manager()
+
+        paths = [DEFAULT_COPIED_PATH, DEFAULT_HOST_PATH]
+        entry = self.hass.config_entries.async_get_entry(
+            self.context.get("entry_id", "")
+        )
+        if entry is not None:
+            paths = _paths(entry.data) or paths
+
+        pair_success = await manager.async_pair_device(device_address)
+        if not pair_success:
+            _LOGGER.info(
+                "In-flow pairing not supported; falling back to manual bond check"
+            )
+
+        irk_record = await manager.async_wait_for_bond_record(
+            device_address, paths
+        )
+        if irk_record is None:
+            irk_record = await manager.async_extract_irk_for_device(
+                device_address, paths
+            )
+
+        if irk_record is None:
+            return self.async_show_form(
+                step_id="pairing_manual_guidance",
+                data_schema=vol.Schema({}),
+                description_placeholders={
+                    "device": device_address,
+                    "copy_command": COMMAND_COPY_BLUEZ,
+                },
+            )
+
+        self._last_irk_record = irk_record
+        return await self.async_step_pairing_result(
+            {"irk_record": irk_record}
+        )
+
+    async def async_step_pairing_manual_guidance(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show manual pairing guidance when in-flow pairing could not extract IRK."""
+        if user_input is not None:
+            return await self.async_step_user()
+        return self.async_show_form(
+            step_id="pairing_manual_guidance",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "device": "device",
+                "copy_command": COMMAND_COPY_BLUEZ,
+            },
+        )
+
+    async def async_step_pairing_result(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Display the extracted IRK and hand off to private_ble_device."""
+        irk_record = (user_input or {}).get(
+            "irk_record", self._last_irk_record
+        )
+        if irk_record is None:
+            return await self.async_step_user()
+
+        if user_input is not None and "irk_record" not in user_input:
+            create_pbd = user_input.get("create_private_ble_device", True)
+            entry = self.hass.config_entries.async_get_entry(
+                self.context.get("entry_id", "")
+            )
+            if entry is None:
+                await self.async_set_unique_id(DOMAIN)
+                self._abort_if_unique_id_configured()
+                default_paths = [DEFAULT_COPIED_PATH, DEFAULT_HOST_PATH]
+                entry_data = _clean_data({
+                    CONF_NAME: DEFAULT_NAME,
+                    CONF_COPIED_PATH: default_paths[0],
+                    CONF_HOST_PATH: default_paths[1],
+                    CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                })
+                if create_pbd:
+                    try:
+                        await self.hass.config_entries.flow.async_init(
+                            "private_ble_device",
+                            context={"source": config_entries.SOURCE_USER},
+                            data={
+                                "address": irk_record.address,
+                                "irk": irk_record.irk,
+                                "name": irk_record.display_name,
+                            },
+                        )
+                    except Exception:
+                        _LOGGER.exception(
+                            "Failed to initiate private_ble_device flow"
+                        )
+                return self.async_create_entry(
+                    title=DEFAULT_NAME, data=entry_data
+                )
+
+            if create_pbd:
+                try:
+                    await self.hass.config_entries.flow.async_init(
+                        "private_ble_device",
+                        context={"source": config_entries.SOURCE_USER},
+                        data={
+                            "address": irk_record.address,
+                            "irk": irk_record.irk,
+                            "name": irk_record.display_name,
+                        },
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "Failed to initiate private_ble_device flow"
+                    )
+            return self.async_abort(reason="pbd_flow_started")
+
+        return self.async_show_form(
+            step_id="pairing_result",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "create_private_ble_device", default=True
+                    ): bool,
+                }
+            ),
+            description_placeholders={
+                "name": irk_record.display_name,
+                "address": irk_record.address or "Unknown",
+                "irk": irk_record.irk,
+            },
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration of paths/interval via the reconfigure step."""
+        entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        assert entry is not None
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            data = _clean_data(user_input)
+            paths = _paths(data)
+
+            if not paths:
+                errors["base"] = "no_paths"
+            else:
+                result = await self.hass.async_add_executor_job(
+                    scan_paths, paths
+                )
+                if not result.scanned_paths and not user_input.get(
+                    CONF_SETUP_ANYWAY, False
+                ):
+                    errors["base"] = "no_valid_paths"
+                    return self.async_show_form(
+                        step_id="reconfigure",
+                        data_schema=self._schema_with_override(data),
+                        errors=errors,
+                        description_placeholders={
+                            "copied_path": data.get(CONF_COPIED_PATH, ""),
+                            "host_path": data.get(CONF_HOST_PATH, ""),
+                        },
+                    )
+
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data=data,
+                    reason="reconfigure_successful",
+                )
+
+        defaults = dict(entry.data)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_paths_schema(defaults),
+            errors=errors,
+            description_placeholders={
+                "copied_path": defaults.get(
+                    CONF_COPIED_PATH, DEFAULT_COPIED_PATH
+                ),
+                "host_path": defaults.get(CONF_HOST_PATH, DEFAULT_HOST_PATH),
+            },
+        )
+
+    def _schema_with_override(
+        self, defaults: dict[str, Any]
+    ) -> vol.Schema:
+        """Return the paths schema with the override checkbox included."""
+        schema = _paths_schema(defaults).schema
+        schema[vol.Optional(CONF_SETUP_ANYWAY, default=False)] = (
+            selector.BooleanSelector()
+        )
+        return vol.Schema(schema)
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
+        return BleIrkExtractorOptionsFlow(config_entry)
+
+
+class BleIrkExtractorOptionsFlow(config_entries.OptionsFlow):
+    """Handle options for BLE IRK Extractor."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            data = _clean_data(user_input)
+            paths = _paths(data)
+
+            if not paths:
+                errors["base"] = "no_paths"
+            else:
+                result = await self.hass.async_add_executor_job(
+                    scan_paths, paths
+                )
+                if not result.scanned_paths and not user_input.get(
+                    CONF_SETUP_ANYWAY, False
+                ):
+                    errors["base"] = "no_valid_paths"
+                    return self.async_show_form(
+                        step_id="init",
+                        data_schema=self._schema_with_override(data),
+                        errors=errors,
+                        description_placeholders={
+                            "copied_path": data.get(CONF_COPIED_PATH, ""),
+                            "host_path": data.get(CONF_HOST_PATH, ""),
+                        },
+                    )
+
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry,
+                    data={**self.config_entry.data, **data},
+                )
+                return self.async_create_entry(title="", data={})
+
+        defaults = {**self.config_entry.data, **self.config_entry.options}
+        return self.async_show_form(
+            step_id="init",
+            data_schema=_paths_schema(defaults),
+            errors=errors,
+            description_placeholders={
+                "copied_path": defaults.get(
+                    CONF_COPIED_PATH, DEFAULT_COPIED_PATH
+                ),
+                "host_path": defaults.get(CONF_HOST_PATH, DEFAULT_HOST_PATH),
+            },
+        )
+
+    def _schema_with_override(
+        self, defaults: dict[str, Any]
+    ) -> vol.Schema:
+        """Return the options schema with the override checkbox included."""
+        schema = _paths_schema(defaults).schema
+        schema[vol.Optional(CONF_SETUP_ANYWAY, default=False)] = (
+            selector.BooleanSelector()
+        )
+        return vol.Schema(schema)
+
+
+def _paths_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Build the paths and scan interval schema."""
     return vol.Schema(
         {
             vol.Optional(
@@ -70,511 +765,16 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): selector.TextSelector(),
             vol.Optional(
                 CONF_SCAN_INTERVAL,
-                default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                default=defaults.get(
+                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                ),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=MIN_SCAN_INTERVAL,
                     max=MAX_SCAN_INTERVAL,
                     mode=selector.NumberSelectorMode.BOX,
-                    unit_of_measurement="min",
+                    unit_of_measurement="minutes",
                 )
             ),
         }
     )
-
-
-def _clean_data(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Normalise form input before storing it in a config entry."""
-    try:
-        interval = int(
-            user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-        )
-    except (TypeError, ValueError):
-        interval = DEFAULT_SCAN_INTERVAL
-    interval = max(MIN_SCAN_INTERVAL, min(MAX_SCAN_INTERVAL, interval))
-
-    name = str(user_input.get(CONF_NAME) or DEFAULT_NAME).strip()
-    return {
-        CONF_NAME: name or DEFAULT_NAME,
-        CONF_COPIED_PATH: str(user_input.get(CONF_COPIED_PATH) or "").strip(),
-        CONF_HOST_PATH: str(user_input.get(CONF_HOST_PATH) or "").strip(),
-        CONF_SCAN_INTERVAL: interval,
-    }
-
-
-def _paths(data: dict[str, Any]) -> list[str]:
-    """Return non-empty, de-duplicated source paths from form data."""
-    paths: list[str] = []
-    for key in (CONF_COPIED_PATH, CONF_HOST_PATH):
-        value = str(data.get(key, "") or "").strip()
-        if value and value not in paths:
-            paths.append(value)
-    return paths
-
-
-class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle initial setup, pairing, and reconfiguration."""
-
-    VERSION = 1
-    _pending_data: dict[str, Any] | None = None
-    _pairing_adapter: str | None = None
-    _pairing_device: str | None = None
-    _pairing_device_name: str | None = None
-    _discovered_devices: list[dict[str, Any]] = []
-    _last_irk_record: Any | None = None  # IrkRecord from bluez module
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Menu to either configure paths or pair a new device."""
-        if user_input is not None:
-            action = user_input.get("action")
-            if action == "pair_device":
-                return await self.async_step_pair_device()
-            if action == "configure_paths":
-                return await self.async_step_paths()
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("action"): vol.In(_ACTION_OPTIONS),
-                }
-            ),
-        )
-
-    async def async_step_paths(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Collect the BlueZ paths and scan interval."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            data = _clean_data(user_input)
-            paths = _paths(data)
-
-            if not paths:
-                errors["base"] = "no_paths"
-            else:
-                result = await self.hass.async_add_executor_job(
-                    scan_paths, paths
-                )
-                if not result.scanned_paths:
-                    errors["base"] = "path_not_found"
-                else:
-                    await self.async_set_unique_id(DOMAIN)
-                    self._abort_if_unique_id_configured()
-                    if not result.records:
-                        self._pending_data = data
-                        return await self.async_step_no_keys()
-                    return self.async_create_entry(
-                        title=data[CONF_NAME],
-                        data=data,
-                    )
-
-        return self.async_show_form(
-            step_id="paths",
-            data_schema=_schema(user_input),
-            errors=errors,
-            description_placeholders={"path_help": _PATH_HELP},
-        )
-
-    async def async_step_no_keys(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Let the user finish setup even if no keys are present yet."""
-        if self._pending_data is None:
-            return self.async_abort(reason="no_pending_setup")
-
-        if user_input is not None:
-            if user_input.get(CONF_SETUP_ANYWAY, True):
-                return self.async_create_entry(
-                    title=self._pending_data[CONF_NAME],
-                    data=self._pending_data,
-                )
-            return await self.async_step_paths(self._pending_data)
-
-        return self.async_show_form(
-            step_id="no_keys",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_SETUP_ANYWAY, default=True
-                    ): selector.BooleanSelector()
-                }
-            ),
-            description_placeholders={
-                "paths": ", ".join(_paths(self._pending_data)),
-            },
-        )
-
-    # ------------------------------------------------------------------
-    # Bluetooth pairing flow – discover -> select -> confirm -> pair -> result
-    # ------------------------------------------------------------------
-
-    async def async_step_pair_device(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Select a Bluetooth adapter to pair on."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            adapter_addr = user_input.get("adapter_address")
-            if not adapter_addr:
-                errors["base"] = "adapter_required"
-            else:
-                self._pairing_adapter = adapter_addr
-                return await self.async_step_device_selection()
-
-        # Get available adapters
-        manager = BleIrkPairingManager(self.hass)
-        adapters = await manager.async_get_adapters()
-        if not adapters:
-            return self.async_abort(reason="no_adapters")
-
-        adapter_options = {
-            a["address"]: a.get("name", a["address"])
-            for a in adapters
-        }
-
-        return self.async_show_form(
-            step_id="pair_device",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("adapter_address"): vol.In(adapter_options),
-                }
-            ),
-            errors=errors,
-            description_placeholders={"adapter_count": str(len(adapters))},
-        )
-
-    async def async_step_device_selection(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Scan for devices and let the user pick one."""
-        if user_input is not None:
-            device_address = user_input.get("device_address")
-            if device_address:
-                info = next(
-                    (
-                        d
-                        for d in self._discovered_devices
-                        if d["address"] == device_address
-                    ),
-                    None,
-                )
-                self._pairing_device = device_address
-                self._pairing_device_name = info["name"] if info else device_address
-                return await self.async_step_pair_confirm()
-
-        # First call: discover devices
-        manager = BleIrkPairingManager(self.hass)
-        devices = await manager.async_discover_devices(self._pairing_adapter or "")
-
-        self._discovered_devices = [
-            {
-                "address": d["address"],
-                "name": d["name"],
-                "rssi": d.get("rssi"),
-                "label": d.get("label", d["address"]),
-            }
-            for d in devices
-        ]
-
-        device_options = {
-            d["address"]: d.get("label", d.get("name", d["address"]))
-            for d in devices
-        }
-
-        if not devices:
-            return self.async_show_form(
-                step_id="device_selection",
-                data_schema=vol.Schema(
-                    {
-                        vol.Optional("device_address", default=""): vol.In({}),
-                    }
-                ),
-                errors={"base": "no_devices_found"},
-                description_placeholders={"start_timeout": str(DISCOVERY_TIMEOUT_SECONDS)},
-            )
-
-        return self.async_show_form(
-            step_id="device_selection",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("device_address"): vol.In(device_options),
-                }
-            ),
-            description_placeholders={"start_timeout": str(DISCOVERY_TIMEOUT_SECONDS)},
-        )
-
-    async def async_step_pair_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Confirm pairing with the selected device."""
-        if user_input is not None and user_input.get("confirm"):
-            return await self.async_step_pairing()
-
-        return self.async_show_form(
-            step_id="pair_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("confirm", default=True): bool,
-                }
-            ),
-            description_placeholders={
-                "device_address": str(self._pairing_device or ""),
-                "device_name": str(self._pairing_device_name or self._pairing_device or ""),
-            },
-        )
-
-    async def async_step_pairing(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Perform the pairing and wait for the BlueZ bond record with IRK."""
-        manager = BleIrkPairingManager(self.hass)
-        device_address = self._pairing_device or ""
-
-        try:
-            success = await manager.async_pair_device(device_address)
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Unexpected exception pairing with %s", device_address)
-            success = False
-
-        if not success:
-            return await self.async_step_pairing_failed()
-
-        # Wait for BlueZ to write the bond info file with the IRK.
-        entry = self.hass.config_entries.async_get_entry(
-            self.context.get("entry_id", "")
-        )
-        paths = _paths(entry.data) if entry else ["/config/bluez_irks", "/var/lib/bluetooth"]
-        irk_record = await manager.async_wait_for_bond_record(
-            device_address, paths
-        )
-
-        self._last_irk_record = irk_record
-
-        if irk_record is None:
-            return self.async_show_form(
-                step_id="pairing_result",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            "create_pbd", default=False
-                        ): bool,
-                    }
-                ),
-                description_placeholders={
-                    "device_address": str(device_address),
-                    "device_name": str(self._pairing_device_name or device_address),
-                    "irk": "IRK not found - BlueZ may not have written it yet.",
-                },
-            )
-
-        return self.async_show_form(
-            step_id="pairing_result",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "create_pbd", default=True
-                    ): bool,
-                }
-            ),
-            description_placeholders={
-                "device_address": str(device_address),
-                "device_name": str(self._pairing_device_name or device_address),
-                "irk": str(irk_record.irk),
-            },
-        )
-
-    async def async_step_pairing_failed(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle pairing failure and present recovery options."""
-        if user_input is not None:
-            action = user_input.get("recovery_action")
-            if action == "configure_paths":
-                return await self.async_step_paths()
-            return await self.async_step_device_selection()
-
-        return self.async_show_form(
-            step_id="pairing_failed",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "recovery_action", default="retry_selection"
-                    ): vol.In(_RECOVERY_OPTIONS),
-                }
-            ),
-            errors={"base": "pairing_failed"},
-            description_placeholders={
-                "device_address": str(self._pairing_device or ""),
-                "device_name": str(self._pairing_device_name or self._pairing_device or ""),
-            },
-        )
-
-    async def async_step_pairing_result(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle the pairing result and optionally start Private BLE Device flow."""
-        if self._last_irk_record is None:
-            return self.async_abort(reason="no_pending_setup")
-
-        irk_record = self._last_irk_record
-        self._last_irk_record = None
-
-        user_input = user_input or {}
-        create_pbd = bool(user_input.get("create_pbd"))
-
-        # Create config entry if we don't have one yet (initial setup via pairing)
-        entry = self.hass.config_entries.async_get_entry(
-            self.context.get("entry_id", "")
-        )
-        if entry is None:
-            await self.async_set_unique_id(DOMAIN)
-            self._abort_if_unique_id_configured()
-            default_paths = ["/config/bluez_irks", "/var/lib/bluetooth"]
-            entry_data = _clean_data({
-                CONF_NAME: DEFAULT_NAME,
-                CONF_COPIED_PATH: default_paths[0],
-                CONF_HOST_PATH: default_paths[1],
-                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-            })
-            if create_pbd:
-                try:
-                    await self.hass.config_entries.flow.async_init(
-                        "private_ble_device",
-                        context={"source": config_entries.SOURCE_USER},
-                        data={
-                            "address": irk_record.address,
-                            "irk": irk_record.irk,
-                            "name": irk_record.display_name,
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Failed to initiate private_ble_device flow")
-            return self.async_create_entry(title=DEFAULT_NAME, data=entry_data)
-
-        # Existing entry: update if needed, optionally start PBD flow
-        if create_pbd:
-            try:
-                await self.hass.config_entries.flow.async_init(
-                    "private_ble_device",
-                    context={"source": config_entries.SOURCE_USER},
-                    data={
-                        "address": irk_record.address,
-                        "irk": irk_record.irk,
-                        "name": irk_record.display_name,
-                    },
-                )
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Failed to initiate private_ble_device flow")
-
-        return self.async_abort(reason="pbd_flow_started" if create_pbd else "setup_completed")
-
-    # ------------------------------------------------------------------
-    # Reconfigure
-    # ------------------------------------------------------------------
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Update the source paths or scan interval for an existing entry."""
-        entry = self.hass.config_entries.async_get_entry(
-            self.context.get("entry_id", "")
-        )
-        if entry is None:
-            return self.async_abort(reason="unknown_entry")
-
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            data = _clean_data(user_input)
-            paths = _paths(data)
-
-            if not paths:
-                errors["base"] = "no_paths"
-            else:
-                result = await self.hass.async_add_executor_job(scan_paths, paths)
-                if not result.scanned_paths:
-                    errors["base"] = "path_not_found"
-                else:
-                    self.hass.config_entries.async_update_entry(
-                        entry, title=data[CONF_NAME]
-                    )
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data=data,
-                        reason="reconfigure_successful",
-                    )
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=_schema(user_input or entry.data),
-            errors=errors,
-            description_placeholders={"path_help": _PATH_HELP},
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(
-        entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
-        """Return the options flow."""
-        return BleIrkExtractorOptionsFlow(entry)
-
-
-class BleIrkExtractorOptionsFlow(config_entries.OptionsFlow):
-    """Allow changing paths and refresh interval from the UI."""
-
-    def __init__(
-        self, entry: config_entries.ConfigEntry | None = None
-    ) -> None:
-        super().__init__()
-        self._entry = entry
-        if entry is not None:
-            try:
-                self.config_entry = entry
-            except AttributeError:
-                pass
-
-    @property
-    def _config_entry(self) -> config_entries.ConfigEntry | None:
-        return getattr(self, "config_entry", None) or self._entry
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Show and handle the options form."""
-        errors: dict[str, str] = {}
-        entry = self._config_entry
-        if entry is None:
-            return self.async_abort(reason="unknown_entry")
-
-        if user_input is not None:
-            data = _clean_data(user_input)
-            paths = _paths(data)
-
-            if not paths:
-                errors["base"] = "no_paths"
-            else:
-                result = await self.hass.async_add_executor_job(
-                    scan_paths, paths
-                )
-                if not result.scanned_paths:
-                    errors["base"] = "path_not_found"
-                else:
-                    self.hass.config_entries.async_update_entry(
-                        entry, title=data[CONF_NAME], data=data
-                    )
-                    return self.async_create_entry(title="", data={})
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=_schema(
-                user_input if user_input is not None else dict(entry.data)
-            ),
-            errors=errors,
-            description_placeholders={"path_help": _PATH_HELP},
-        )

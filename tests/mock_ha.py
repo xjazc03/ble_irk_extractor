@@ -101,6 +101,7 @@ def setup_ha_mocks():
     # Mock config_entries
     ha_ce = types.ModuleType("homeassistant.config_entries")
     ha_ce.SOURCE_USER = "user"
+    ha_ce.ConfigFlowResult = dict
     class ConfigEntry:
         def __init__(self, entry_id="test_entry_id", title="BLE IRK Extractor", data=None, options=None):
             self.entry_id = entry_id

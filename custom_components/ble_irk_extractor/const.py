@@ -11,6 +11,9 @@ DEFAULT_NAME = "BLE IRK Extractor"
 DEFAULT_COPIED_PATH = "/config/bluez_irks"
 DEFAULT_HOST_PATH = "/var/lib/bluetooth"
 
+COMMAND_COPY_BLUEZ = "mkdir -p /config/bluez_irks && cp -r /var/lib/bluetooth/* /config/bluez_irks/"
+DEFAULT_PAIRING_TIMEOUT = 180
+
 DEFAULT_SCAN_INTERVAL = 60
 MIN_SCAN_INTERVAL = 1
 MAX_SCAN_INTERVAL = 1440

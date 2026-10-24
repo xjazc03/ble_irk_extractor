@@ -13,7 +13,10 @@ Modern phones and other BLE devices rotate their advertised addresses using Reso
 - Recursive scanner supports the original BlueZ layout, flattened files, and `*.info` files
 - Configurable rescan interval
 - **Rescan BlueZ data** button for immediate refreshes
-- **Pair new Bluetooth device** flow: discover, pair, extract IRK, and optionally create a Private BLE Device entry
+- **3-Path Setup Flow**:
+  - **Select IRK Key**: Pick a key from synced BlueZ storage sorted by recency and provision directly into Private BLE Device
+  - **Add IRK Key**: Manually enter and validate a 32-character hex IRK
+  - **Extract IRK Key**: Put adapter in pairing mode (180s safety timeout), safely revert flags, and present terminal sync command
 - One sensor with a friendly `keys` attribute plus per-device metadata
 - Diagnostics that redact IRK values
 - No external Python dependencies

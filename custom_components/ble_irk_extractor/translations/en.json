@@ -3,14 +3,42 @@
     "step": {
       "user": {
         "title": "BLE IRK Extractor Setup",
-        "description": "Choose whether to configure BlueZ file paths to scan for existing IRKs, or pair a new Bluetooth device directly to extract its IRK.",
+        "description": "Select an extraction or setup path:\n- **Select IRK Key**: Pick a key from synced BlueZ host storage.\n- **Add IRK Key**: Manually enter an IRK.\n- **Extract IRK Key**: Put adapter in pairing mode to receive new device keys.",
         "data": {
           "action": "Action"
         }
       },
+      "select_irk": {
+        "title": "Select IRK Key",
+        "description": "Select a paired device from synced BlueZ storage to set up a Private BLE Device.",
+        "data": {
+          "selected_device": "Discovered device",
+          "retry": "Retry scan"
+        }
+      },
+      "add_irk": {
+        "title": "Add IRK Key",
+        "description": "Manually enter a device name and 32-character hexadecimal Identity Resolving Key (IRK).",
+        "data": {
+          "name": "Device name",
+          "irk": "IRK Key"
+        }
+      },
+      "extract_irk": {
+        "title": "Extract IRK Key (Pairing Mode)",
+        "description": "Pairing mode is active on your Bluetooth adapter ({adapter}) for {timeout} seconds. Open Bluetooth settings on your phone or device, select this Home Assistant server, and complete pairing. When finished, submit this form.",
+        "data": {
+          "confirm_paired": "I have finished pairing"
+        }
+      },
+      "extract_sync": {
+        "title": "Sync BlueZ Storage",
+        "description": "Pairing mode has been safely deactivated. BlueZ stores pairing keys on the host. To sync them to Home Assistant storage, run this terminal command on your host or SSH terminal:\n\n`{copy_command}`\n\nOnce completed, restart this setup flow and choose 'Select IRK Key' (Path 1) to create your Private BLE Device.",
+        "data": {}
+      },
       "paths": {
         "title": "Configure BlueZ Paths",
-        "description": "Point the integration at the BlueZ bond data on your Home Assistant host. {path_help}",
+        "description": "Point the integration at the BlueZ bond data on your Home Assistant host.",
         "data": {
           "name": "Name",
           "copied_path": "Copied BlueZ folder",
@@ -24,69 +52,36 @@
           "scan_interval": "How often to reread the BlueZ files, in minutes."
         }
       },
-      "no_keys": {
-        "title": "No IRKs found yet",
-        "description": "The configured paths exist, but no Identity Resolving Keys were found in: {paths}. You can finish setup now and add keys later, or go back and correct the paths.",
-        "data": {
-          "setup_anyway": "Set up anyway"
-        },
-        "data_description": {
-          "setup_anyway": "Finish setup even though no keys are present yet. The sensor will update automatically when keys appear."
-        }
-      },
       "pair_device": {
         "title": "Pair a new Bluetooth device",
-        "description": "Select the Bluetooth adapter you want to pair through ({adapter_count} available). Make sure the device is discoverable.",
+        "description": "Select the Bluetooth adapter you want to pair through. Make sure the device is discoverable.",
         "data": {
-          "adapter_address": "Bluetooth adapter"
-        },
-        "data_description": {
-          "adapter_address": "The host Bluetooth adapter to scan and pair through."
+          "adapter": "Bluetooth adapter"
         }
       },
-      "device_selection": {
+      "discover_devices": {
         "title": "Select a Bluetooth device",
-        "description": "Choose the device you want to pair with from the discovered list. This scan lasts up to {start_timeout} seconds.",
+        "description": "Choose the device you want to pair with from the discovered list.",
         "data": {
-          "device_address": "Bluetooth device"
-        },
-        "data_description": {
-          "device_address": "The device to pair with."
-        }
-      },
-      "pair_confirm": {
-        "title": "Confirm pairing",
-        "description": "You are about to pair with: {device_name} ({device_address}). Ensure the device is in pairing mode.",
-        "data": {
-          "confirm": "Pair with this device"
-        },
-        "data_description": {
-          "confirm": "Start pairing and extract the device's IRK."
+          "device": "Bluetooth device",
+          "retry": "Retry scan"
         }
       },
       "pairing_result": {
         "title": "Pairing complete",
-        "description": "The pairing with {device_name} ({device_address}) finished. Extracted IRK: {irk}. You can use it to set up Home Assistant's Private BLE Device integration.",
+        "description": "Extracted IRK: {irk}. You can use it to set up Home Assistant's Private BLE Device integration.",
         "data": {
-          "create_pbd": "Create Private BLE Device entry"
-        },
-        "data_description": {
-          "create_pbd": "Initiate the Private BLE Device setup with this IRK."
+          "create_private_ble_device": "Create Private BLE Device entry"
         }
       },
-      "pairing_failed": {
-        "title": "Pairing Failed",
-        "description": "Could not pair automatically with {device_name} ({device_address}). iOS and other secure devices require pairing via the host BlueZ agent (bluetoothctl). Choose how you would like to proceed:",
-        "data": {
-          "recovery_action": "Action"
-        },
-        "data_description": {
-          "recovery_action": "Choose whether to retry device discovery or switch to BlueZ host storage extraction."
-        }
+      "pairing_manual_guidance": {
+        "title": "Manual Pairing Guidance",
+        "description": "Automatic pairing could not retrieve the bond key directly. Run the sync command after pairing:\n\n`{copy_command}`",
+        "data": {}
       },
       "reconfigure": {
         "title": "Reconfigure BLE IRK Extractor",
-        "description": "Update the BlueZ source paths or scan interval. {path_help}",
+        "description": "Update the BlueZ source paths or scan interval.",
         "data": {
           "name": "Name",
           "copied_path": "Copied BlueZ folder",
@@ -103,20 +98,18 @@
     },
     "error": {
       "no_paths": "Enter at least one BlueZ source path.",
-      "path_not_found": "None of the configured paths exist. Check the paths and try again.",
-      "adapter_required": "Select a Bluetooth adapter.",
+      "no_valid_paths": "None of the configured paths exist. Check the paths and try again.",
+      "no_irks_found": "No IRK keys found. Run the copy command on your host first:\n{copy_command}",
+      "invalid_irk_format": "The IRK must be a valid 32-character hexadecimal string (16 bytes).",
       "no_adapters": "No Bluetooth adapters found. Enable Bluetooth in Home Assistant first.",
       "no_devices_found": "No discoverable devices found. Make sure the device is in pairing mode and try again.",
-      "pairing_failed": "Pairing failed. Try pairing manually in Home Assistant's Bluetooth settings, then rescan.",
       "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
       "already_configured": "BLE IRK Extractor is already configured.",
-      "no_pending_setup": "The setup data was lost. Please start again.",
       "reconfigure_successful": "Reconfiguration successful.",
-      "unknown_entry": "The config entry could not be found.",
       "pbd_flow_started": "Private BLE Device setup started with the extracted IRK.",
-      "setup_completed": "Setup completed. The sensor will now show the extracted IRK.",
+      "setup_completed": "Setup completed.",
       "no_adapters": "No Bluetooth adapters available."
     }
   },
@@ -124,7 +117,7 @@
     "step": {
       "init": {
         "title": "BLE IRK Extractor options",
-        "description": "Change the BlueZ source paths or how often the files are rescanned. {path_help}",
+        "description": "Change the BlueZ source paths or how often the files are rescanned.",
         "data": {
           "name": "Name",
           "copied_path": "Copied BlueZ folder",
@@ -141,7 +134,7 @@
     },
     "error": {
       "no_paths": "Enter at least one BlueZ source path.",
-      "path_not_found": "None of the configured paths exist. Check the paths and try again."
+      "no_valid_paths": "None of the configured paths exist. Check the paths and try again."
     }
   },
   "entity": {

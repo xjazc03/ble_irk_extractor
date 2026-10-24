@@ -20,6 +20,7 @@ _BLUEZ = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _BLUEZ
 _SPEC.loader.exec_module(_BLUEZ)
 scan_paths = _BLUEZ.scan_paths
+IrkRecord = _BLUEZ.IrkRecord
 
 IRK = "0123456789abcdef0123456789abcdef"
 
@@ -185,6 +186,49 @@ class BluezScannerTests(unittest.TestCase):
                 [record.name for record in result.records], ["One", "Two"]
             )
 
+
+    def test_format_irk_label(self) -> None:
+        from custom_components.ble_irk_extractor.bluez import format_irk_label
+
+        rec1 = IrkRecord(
+            name="Pixel 8 Pro",
+            address="AA:BB:CC:DD:EE:01",
+            irk="1" * 32,
+            source="/config/bluez_irks",
+            path="/config/bluez_irks/info1",
+        )
+        self.assertEqual(format_irk_label(rec1), "Pixel 8 Pro (AA:BB:CC:DD:EE:01)")
+
+        rec2 = IrkRecord(
+            name=None,
+            address="AA:BB:CC:DD:EE:02",
+            irk="2" * 32,
+            source="/config/bluez_irks",
+            path="/config/bluez_irks/info2",
+        )
+        self.assertEqual(format_irk_label(rec2), "AA:BB:CC:DD:EE:02")
+
+        rec3 = IrkRecord(
+            name="aa:bb:cc:dd:ee:03",
+            address="AA:BB:CC:DD:EE:03",
+            irk="3" * 32,
+            source="/config/bluez_irks",
+            path="/config/bluez_irks/info3",
+        )
+        self.assertEqual(format_irk_label(rec3), "AA:BB:CC:DD:EE:03")
+
+    def test_mtime_parsing(self) -> None:
+        import os
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "info"
+            file_path.write_text(
+                sample_info(name="Timed Device", address="AA:BB:CC:DD:EE:99", irk="9" * 32),
+                encoding="utf-8",
+            )
+            os.utime(file_path, (1234567.0, 1234567.0))
+            result = scan_paths([temp_dir])
+            self.assertEqual(len(result.records), 1)
+            self.assertEqual(result.records[0].mtime, 1234567.0)
 
 if __name__ == "__main__":
     unittest.main()

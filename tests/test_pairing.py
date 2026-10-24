@@ -336,5 +336,37 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(devices[3]["rssi"])
 
 
+
+    async def test_adapter_pairing_mode_enable_disable(self) -> None:
+        hass = HomeAssistant()
+        manager = BleIrkPairingManager(hass)
+
+        with patch.object(manager, "_async_apply_bluez_properties", new=AsyncMock()) as mock_apply:
+            await manager.async_enable_pairing_mode("hci0", timeout=180)
+            self.assertTrue(manager.adapter_properties["hci0"]["Discoverable"])
+            self.assertTrue(manager.adapter_properties["hci0"]["Pairable"])
+            self.assertEqual(manager.adapter_properties["hci0"]["DiscoverableTimeout"], 180)
+            mock_apply.assert_called_with("hci0", discoverable=True, pairable=True, timeout=180)
+
+            await manager.async_disable_pairing_mode("hci0")
+            self.assertFalse(manager.adapter_properties["hci0"]["Discoverable"])
+            self.assertFalse(manager.adapter_properties["hci0"]["Pairable"])
+            self.assertEqual(manager.adapter_properties["hci0"]["DiscoverableTimeout"], 0)
+            mock_apply.assert_called_with("hci0", discoverable=False, pairable=False, timeout=0)
+
+    async def test_adapter_pairing_mode_timeout_auto_revert(self) -> None:
+        hass = HomeAssistant()
+        manager = BleIrkPairingManager(hass)
+
+        with patch.object(manager, "_async_apply_bluez_properties", new=AsyncMock()):
+            # Enable with 1 second timeout
+            await manager.async_enable_pairing_mode("hci0", timeout=1)
+            self.assertTrue(manager.adapter_properties["hci0"]["Discoverable"])
+            # Let the background task run
+            import asyncio
+            await asyncio.sleep(1.05)
+            self.assertFalse(manager.adapter_properties["hci0"]["Discoverable"])
+            self.assertFalse(manager.adapter_properties["hci0"]["Pairable"])
+
 if __name__ == "__main__":
     unittest.main()

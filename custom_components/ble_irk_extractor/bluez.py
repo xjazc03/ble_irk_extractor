@@ -42,6 +42,7 @@ class IrkRecord:
     irk: str
     source: str
     path: str
+    mtime: float = 0.0
 
     @property
     def display_name(self) -> str:
@@ -51,6 +52,22 @@ class IrkRecord:
         if self.address:
             return self.address.upper()
         return "Unknown device"
+
+
+def format_irk_label(record: IrkRecord) -> str:
+    """Format a label for an IRK record: {Friendly Name} ({MAC Address}).
+
+    If the name already equals the address or no distinct friendly name
+    exists, returns just the address.
+    """
+    disp = record.display_name
+    addr = record.address
+    if addr:
+        clean_addr = addr.upper()
+        if disp.upper() != clean_addr and disp.lower() not in _PLACEHOLDER_NAMES:
+            return f"{disp} ({clean_addr})"
+        return clean_addr
+    return disp
 
 
 @dataclass(frozen=True)
@@ -193,12 +210,19 @@ def _parse_info_file(path: Path, source: str) -> IrkRecord | None:
     address = address or derived_address
     name = name or address
 
+    mtime = 0.0
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        pass
+
     return IrkRecord(
         name=name,
         address=address,
         irk=irk,
         source=source,
         path=str(path),
+        mtime=mtime,
     )
 
 
@@ -252,6 +276,7 @@ def _deduplicate(records: list[IrkRecord]) -> tuple[IrkRecord, ...]:
             irk=record.irk,
             source=", ".join(sources),
             path=existing.path,
+            mtime=max(getattr(existing, "mtime", 0.0), getattr(record, "mtime", 0.0)),
         )
 
     return tuple(
