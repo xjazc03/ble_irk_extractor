@@ -47,25 +47,76 @@ class BleIrkPairingManager:
         self._unsub: Any = None
 
     async def async_get_adapters(self) -> list[dict[str, str]]:
-        """Return available Bluetooth adapters."""
-        try:
-            adapters = await bluetooth.async_get_adapters(self.hass)
-        except TypeError:
-            # Older cores may expose this as a synchronous function.
-            adapters = await self.hass.async_add_executor_job(
-                bluetooth.async_get_adapters, self.hass
-            )
-        except Exception:  # noqa: BLE001 - Bluetooth may not be available
-            _LOGGER.exception("Failed to get Bluetooth adapters")
-            return []
+        """Return available Bluetooth adapters.
 
-        return [
-            {
-                "address": adapter.address,
-                "name": adapter.name or adapter.address,
-            }
-            for adapter in adapters
-        ]
+        First attempts to enumerate host adapters using the bluetooth_adapters
+        package (used by Home Assistant Core). If not present or empty, falls
+        back to querying Home Assistant's active scanner count.
+        """
+        adapters_list: list[dict[str, str]] = []
+
+        try:
+            from bluetooth_adapters import get_adapters
+
+            adapters_manager = get_adapters()
+            await adapters_manager.refresh()
+            raw_adapters = getattr(adapters_manager, "adapters", {})
+            for iface, details in raw_adapters.items():
+                addr = details.get("address") or iface
+                name = details.get("product") or details.get("name") or iface
+                adapters_list.append({
+                    "address": addr,
+                    "name": f"{name} ({addr})" if addr != name else name,
+                })
+        except ImportError:
+            _LOGGER.debug("bluetooth_adapters package not installed; checking HA scanners")
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to query bluetooth_adapters")
+
+        if not adapters_list:
+            # Fallback 1: check active scanners in Home Assistant core bluetooth
+            scanner_count_func = getattr(bluetooth, "async_scanner_count", None)
+            if scanner_count_func:
+                try:
+                    count = scanner_count_func(self.hass, connectable=True)
+                    if count == 0:
+                        count = scanner_count_func(self.hass, connectable=False)
+                    if count > 0:
+                        suffix = "s" if count > 1 else ""
+                        adapters_list.append({
+                            "address": "default",
+                            "name": f"Home Assistant Bluetooth ({count} active scanner{suffix})",
+                        })
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Failed to query bluetooth scanner count")
+
+        if not adapters_list:
+            # Fallback 2: legacy or custom method if present
+            legacy_get = getattr(bluetooth, "async_get_adapters", None)
+            if legacy_get:
+                try:
+                    legacy_adapters = await legacy_get(self.hass)
+                except TypeError:
+                    legacy_adapters = await self.hass.async_add_executor_job(
+                        legacy_get, self.hass
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Failed legacy async_get_adapters")
+                    legacy_adapters = []
+
+                if legacy_adapters:
+                    for adapter in legacy_adapters:
+                        addr = getattr(adapter, "address", str(adapter))
+                        name = getattr(adapter, "name", None) or addr
+                        adapters_list.append({"address": addr, "name": name})
+
+        if not adapters_list:
+            _LOGGER.warning(
+                "No Bluetooth adapters or scanners detected. Ensure the Bluetooth "
+                "integration is enabled in Home Assistant under Settings -> Devices & Services"
+            )
+
+        return adapters_list
 
     async def async_discover_devices(
         self, adapter_address: str
@@ -74,29 +125,77 @@ class BleIrkPairingManager:
         self._discovered = {}
 
         def _callback(
-            info: BluetoothServiceInfoBleak, change: Any
+            info: BluetoothServiceInfoBleak, change: Any = None
         ) -> None:
             self._discovered[info.address] = info
 
-        try:
-            scanner = bluetooth.async_get_scanner(self.hass, adapter_address)
-        except TypeError:
-            scanner = await self.hass.async_add_executor_job(
-                bluetooth.async_get_scanner, self.hass, adapter_address
-            )
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Failed to get scanner for %s", adapter_address)
-            scanner = None
+        # Pre-seed with any devices already discovered by Home Assistant
+        discovered_info_func = getattr(bluetooth, "async_discovered_service_info", None)
+        if discovered_info_func:
+            try:
+                for info in discovered_info_func(self.hass, connectable=False):
+                    self._discovered[info.address] = info
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Could not retrieve async_discovered_service_info")
+
+        # Verify scanner availability
+        scanner = None
+        get_scanner_func = getattr(bluetooth, "async_get_scanner", None)
+        if get_scanner_func:
+            try:
+                scanner = get_scanner_func(self.hass)
+            except TypeError:
+                try:
+                    scanner = get_scanner_func(self.hass, adapter_address)
+                except Exception:  # noqa: BLE001
+                    scanner = None
+            except Exception:  # noqa: BLE001
+                scanner = None
 
         if not scanner:
+            scanner_count_func = getattr(bluetooth, "async_scanner_count", None)
+            if scanner_count_func:
+                try:
+                    if scanner_count_func(self.hass, connectable=False) > 0:
+                        scanner = True
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if not scanner and not self._discovered:
+            _LOGGER.warning("No Bluetooth scanner available for discovery on %s", adapter_address)
             return []
 
-        self._unsub = bluetooth.async_register_scanner(
-            self.hass,
-            _callback,
-            BluetoothCallbackMatcher(address=None),
-            scanning_mode=BluetoothScanningMode.ACTIVE,
-        )
+        # Register listener for live advertisements
+        register_cb = getattr(bluetooth, "async_register_callback", None)
+        if register_cb:
+            try:
+                self._unsub = register_cb(
+                    self.hass,
+                    _callback,
+                    BluetoothCallbackMatcher(address=None),
+                    mode=BluetoothScanningMode.ACTIVE,
+                )
+            except TypeError:
+                try:
+                    self._unsub = register_cb(
+                        self.hass,
+                        _callback,
+                        BluetoothCallbackMatcher(address=None),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+        elif hasattr(bluetooth, "async_register_scanner"):
+            try:
+                self._unsub = bluetooth.async_register_scanner(
+                    self.hass,
+                    _callback,
+                    BluetoothCallbackMatcher(address=None),
+                    scanning_mode=BluetoothScanningMode.ACTIVE,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         try:
             await asyncio.sleep(DISCOVERY_TIMEOUT_SECONDS)

@@ -178,6 +178,12 @@ mkdir -p /config/bluez_irks
 
 This is expected on Home Assistant OS. Use the copied folder instead, or leave the host path blank.
 
+### No Bluetooth adapters available
+
+If device pairing reports no adapters available:
+- Ensure the native **Bluetooth** integration is added and enabled in Home Assistant under **Settings → Devices & Services**.
+- Verify that your Bluetooth adapter is recognized by the host OS.
+
 ### Multiple devices have the same name
 
 The sensor appends ` (2)`, ` (3)`, and so on. The `devices` attribute shows the address and source for each entry.

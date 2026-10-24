@@ -31,6 +31,36 @@ def setup_ha_mocks():
     vol.Optional = Optional
     sys.modules["voluptuous"] = vol
 
+    # Mock bluetooth_adapters library
+    bt_adapters = types.ModuleType("bluetooth_adapters")
+
+    class BluetoothAdaptersMock:
+        def __init__(self, adapters=None):
+            if adapters is not None:
+                self.adapters = adapters
+            else:
+                self.adapters = {
+                    "hci0": {
+                        "address": "00:11:22:33:44:55",
+                        "name": "hci0",
+                        "passive_scan": True,
+                        "manufacturer": "Linux Foundation",
+                        "product": "Bluetooth Adapter",
+                    }
+                }
+
+        async def refresh(self):
+            pass
+
+    def get_adapters():
+        return BluetoothAdaptersMock()
+
+    bt_adapters.get_adapters = get_adapters
+    bt_adapters.BluetoothAdapters = BluetoothAdaptersMock
+    bt_adapters.ADAPTER_ADDRESS = "address"
+    bt_adapters.ADAPTER_PASSIVE_SCAN = "passive_scan"
+    sys.modules["bluetooth_adapters"] = bt_adapters
+
     # Mock homeassistant core
     ha = types.ModuleType("homeassistant")
     ha_core = types.ModuleType("homeassistant.core")
@@ -230,9 +260,10 @@ def setup_ha_mocks():
     ha_comp_bt.BluetoothScanningMode = BluetoothScanningMode
     ha_comp_bt.BluetoothCallbackMatcher = BluetoothCallbackMatcher
     ha_comp_bt.BluetoothServiceInfoBleak = BluetoothServiceInfoBleak
-    ha_comp_bt.async_get_adapters = MagicMock()
+    ha_comp_bt.async_scanner_count = MagicMock(return_value=1)
     ha_comp_bt.async_get_scanner = MagicMock()
-    ha_comp_bt.async_register_scanner = MagicMock()
+    ha_comp_bt.async_discovered_service_info = MagicMock(return_value=[])
+    ha_comp_bt.async_register_callback = MagicMock(return_value=MagicMock())
     ha_comp_bt.async_pair_device = MagicMock()
 
     ha_comp_sensor = types.ModuleType("homeassistant.components.sensor")

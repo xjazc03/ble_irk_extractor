@@ -26,50 +26,56 @@ from custom_components.ble_irk_extractor.bluez import IrkRecord, ScanResult
 class PairingTests(unittest.IsolatedAsyncioTestCase):
     """Test BleIrkPairingManager discovery, pairing, and extraction."""
 
-    async def test_async_get_adapters(self) -> None:
+    async def test_async_get_adapters_from_bluetooth_adapters(self) -> None:
         hass = HomeAssistant()
         manager = BleIrkPairingManager(hass)
 
-        mock_adapter = MagicMock()
-        mock_adapter.address = "00:11:22:33:44:55"
-        mock_adapter.name = "hci0"
+        adapters = await manager.async_get_adapters()
+        self.assertEqual(len(adapters), 1)
+        self.assertEqual(adapters[0]["address"], "00:11:22:33:44:55")
+        self.assertIn("Bluetooth Adapter", adapters[0]["name"])
 
-        with patch.object(
-            bluetooth, "async_get_adapters", new=AsyncMock(return_value=[mock_adapter])
-        ):
+    async def test_async_get_adapters_scanner_count_fallback(self) -> None:
+        hass = HomeAssistant()
+        manager = BleIrkPairingManager(hass)
+
+        import bluetooth_adapters
+        mock_mgr = MagicMock()
+        mock_mgr.refresh = AsyncMock()
+        mock_mgr.adapters = {}
+
+        with patch.object(bluetooth_adapters, "get_adapters", return_value=mock_mgr), \
+             patch.object(bluetooth, "async_scanner_count", return_value=2):
             adapters = await manager.async_get_adapters()
             self.assertEqual(len(adapters), 1)
-            self.assertEqual(adapters[0]["address"], "00:11:22:33:44:55")
-            self.assertEqual(adapters[0]["name"], "hci0")
+            self.assertEqual(adapters[0]["address"], "default")
+            self.assertIn("2 active scanners", adapters[0]["name"])
 
-    async def test_async_get_adapters_sync_fallback(self) -> None:
+    async def test_async_get_adapters_error_fallback(self) -> None:
         hass = HomeAssistant()
         manager = BleIrkPairingManager(hass)
 
-        mock_adapter = MagicMock()
-        mock_adapter.address = "00:11:22:33:44:55"
-        mock_adapter.name = None
-
-        def sync_get_adapters(h):
-            return [mock_adapter]
-
-        with patch.object(
-            bluetooth, "async_get_adapters", side_effect=TypeError("sync function")
-        ), patch.object(hass, "async_add_executor_job", side_effect=lambda fn, *args: sync_get_adapters(hass)):
-            adapters = await manager.async_get_adapters()
-            self.assertEqual(len(adapters), 1)
-            self.assertEqual(adapters[0]["address"], "00:11:22:33:44:55")
-            self.assertEqual(adapters[0]["name"], "00:11:22:33:44:55")
-
-    async def test_async_get_adapters_error(self) -> None:
-        hass = HomeAssistant()
-        manager = BleIrkPairingManager(hass)
-
-        with patch.object(
-            bluetooth, "async_get_adapters", side_effect=RuntimeError("Bluetooth daemon down")
-        ):
+        import bluetooth_adapters
+        with patch.object(bluetooth_adapters, "get_adapters", side_effect=RuntimeError("D-Bus down")), \
+             patch.object(bluetooth, "async_scanner_count", return_value=0):
             adapters = await manager.async_get_adapters()
             self.assertEqual(adapters, [])
+
+    async def test_async_get_adapters_none_detected_logs_guidance(self) -> None:
+        hass = HomeAssistant()
+        manager = BleIrkPairingManager(hass)
+
+        import bluetooth_adapters
+        mock_mgr = MagicMock()
+        mock_mgr.refresh = AsyncMock()
+        mock_mgr.adapters = {}
+
+        with patch.object(bluetooth_adapters, "get_adapters", return_value=mock_mgr), \
+             patch.object(bluetooth, "async_scanner_count", return_value=0), \
+             self.assertLogs("custom_components.ble_irk_extractor.pairing", level="WARNING") as log:
+            adapters = await manager.async_get_adapters()
+            self.assertEqual(adapters, [])
+            self.assertTrue(any("Settings -> Devices & Services" in m for m in log.output))
 
     async def test_async_discover_devices(self) -> None:
         hass = HomeAssistant()
@@ -78,16 +84,16 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         mock_scanner = MagicMock()
         unsub = MagicMock()
 
-        def fake_register(hass, callback, matcher, scanning_mode):
-            # Simulate devices discovered
+        def fake_register(hass, callback, matcher, mode=None):
             callback(BluetoothServiceInfoBleak("AA:BB:CC:DD:EE:01", name="Device Low", rssi=-80), None)
             callback(BluetoothServiceInfoBleak("AA:BB:CC:DD:EE:02", name="Device High", rssi=-40), None)
             return unsub
 
-        with patch.object(bluetooth, "async_get_scanner", return_value=mock_scanner),              patch.object(bluetooth, "async_register_scanner", side_effect=fake_register),              patch("asyncio.sleep", new=AsyncMock()):
+        with patch.object(bluetooth, "async_get_scanner", return_value=mock_scanner), \
+             patch.object(bluetooth, "async_register_callback", side_effect=fake_register), \
+             patch("asyncio.sleep", new=AsyncMock()):
             devices = await manager.async_discover_devices("00:11:22:33:44:55")
             self.assertEqual(len(devices), 2)
-            # Verified sorted by RSSI descending
             self.assertEqual(devices[0]["address"], "AA:BB:CC:DD:EE:02")
             self.assertEqual(devices[0]["rssi"], -40)
             self.assertEqual(devices[1]["address"], "AA:BB:CC:DD:EE:01")
@@ -98,7 +104,8 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
         hass = HomeAssistant()
         manager = BleIrkPairingManager(hass)
 
-        with patch.object(bluetooth, "async_get_scanner", return_value=None):
+        with patch.object(bluetooth, "async_get_scanner", return_value=None), \
+             patch.object(bluetooth, "async_scanner_count", return_value=0):
             devices = await manager.async_discover_devices("00:11:22:33:44:55")
             self.assertEqual(devices, [])
 
@@ -188,12 +195,14 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
 
         # Retry find
         calls = [None, rec]
-        with patch.object(manager, "extract_irk_for_device", side_effect=lambda *args: calls.pop(0)),              patch("asyncio.sleep", new=AsyncMock()):
+        with patch.object(manager, "extract_irk_for_device", side_effect=lambda *args: calls.pop(0)), \
+             patch("asyncio.sleep", new=AsyncMock()):
             result = await manager.async_wait_for_bond_record("AA:BB:CC:DD:EE:FF", ["/config/bluez_irks"])
             self.assertEqual(result, rec)
 
         # Timeout / not found
-        with patch.object(manager, "extract_irk_for_device", return_value=None),              patch("asyncio.sleep", new=AsyncMock()):
+        with patch.object(manager, "extract_irk_for_device", return_value=None), \
+             patch("asyncio.sleep", new=AsyncMock()):
             result = await manager.async_wait_for_bond_record("AA:BB:CC:DD:EE:FF", ["/config/bluez_irks"])
             self.assertIsNone(result)
 
