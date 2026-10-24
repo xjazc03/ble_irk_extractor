@@ -104,13 +104,15 @@ The Home Assistant OS container cannot read `/var/lib/bluetooth` from the host. 
 3. Select **Pair a new Bluetooth device and extract its IRK**.
 4. Choose the Bluetooth adapter to use for pairing.
 5. The integration will scan for discoverable devices (10 seconds). Make sure your device is in pairing mode.
-6. Select the device you want to pair from the list.
+6. Select the device you want to pair from the list. Discovered devices display with their friendly broadcast name (or `Apple Device` if manufacturer ID `0x004c` is detected) and signal strength in decibels (`dBm`). Entries are sorted descending by RSSI so nearby devices appear at the top.
 7. Confirm the pairing. The integration will attempt to pair via Home Assistant's Bluetooth stack.
 8. After successful pairing, the integration waits a few seconds for BlueZ to write the bond record containing the IRK.
 9. The extracted IRK is displayed. You can:
    - **Create Private BLE Device entry** — immediately start the Private BLE Device setup with this IRK.
    - Skip this step and use the sensor attributes later.
 10. The integration creates a config entry with default paths so future rescans will pick up the bonded device.
+
+> **Tip for Apple / iOS devices:** iPhones rotate random addresses and omit their friendly name in the background. To make an iPhone broadcast its friendly name and accept pairing requests, open **Settings → Bluetooth** on the phone and keep that screen open during the 10-second scan. Holding the phone near your Bluetooth adapter or ESPHome proxy bubbles it directly to the top of the list by signal strength.
 
 > **Note:** Pairing through Home Assistant requires Bluetooth to be enabled and working in Home Assistant. On Home Assistant OS, this works out of the box. On other installations, ensure the Bluetooth adapter is accessible and `bluetooth` integration is configured. If pairing fails, you can always pair manually via `bluetoothctl` or your OS Bluetooth settings, then use Method 1.
 

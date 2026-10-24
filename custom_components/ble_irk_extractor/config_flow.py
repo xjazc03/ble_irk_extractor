@@ -268,18 +268,22 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "address": d["address"],
                 "name": d["name"],
                 "rssi": d.get("rssi"),
+                "label": d.get("label", d["address"]),
             }
             for d in devices
         ]
+
+        device_options = {
+            d["address"]: d.get("label", d.get("name", d["address"]))
+            for d in devices
+        }
 
         if not devices:
             return self.async_show_form(
                 step_id="device_selection",
                 data_schema=vol.Schema(
                     {
-                        vol.Optional("device_address", default=""): vol.In(
-                            [d["address"] for d in devices]
-                        ),
+                        vol.Optional("device_address", default=""): vol.In({}),
                     }
                 ),
                 errors={"base": "no_devices_found"},
@@ -290,9 +294,7 @@ class BleIrkExtractorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="device_selection",
             data_schema=vol.Schema(
                 {
-                    vol.Required("device_address"): vol.In(
-                        [d["address"] for d in devices]
-                    ),
+                    vol.Required("device_address"): vol.In(device_options),
                 }
             ),
             description_placeholders={"start_timeout": str(DISCOVERY_TIMEOUT_SECONDS)},

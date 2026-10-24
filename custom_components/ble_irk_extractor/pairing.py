@@ -37,6 +37,42 @@ DISCOVERY_TIMEOUT_SECONDS = DISCOVERY_TIMEOUT
 BOND_WRITE_DELAY = 3
 BOND_WRITE_RETRIES = 3
 
+APPLE_MANUFACTURER_ID = 0x004c  # 76 decimal (Apple, Inc.)
+
+
+def format_device_label(
+    address: str,
+    name: str | None = None,
+    rssi: int | None = None,
+    manufacturer_data: dict[int, bytes] | None = None,
+) -> str:
+    """Format a human-readable label for a discovered Bluetooth device.
+
+    Formats:
+    - Named device: "{name} ({address}) [{rssi} dBm]"
+    - Unnamed Apple device: "Apple Device ({address}) [{rssi} dBm]"
+    - Unnamed fallback: "{address} [{rssi} dBm]"
+
+    If rssi is None, the trailing " [{rssi} dBm]" suffix is omitted.
+    """
+    clean_name = name.strip() if (name and name.strip()) else ""
+    is_named = bool(clean_name and clean_name.lower() != address.lower())
+
+    if is_named:
+        base = f"{clean_name} ({address})"
+    else:
+        mfg = manufacturer_data or {}
+        is_apple = (APPLE_MANUFACTURER_ID in mfg) or (76 in mfg)
+        if is_apple:
+            base = f"Apple Device ({address})"
+        else:
+            base = address
+
+    if rssi is not None:
+        return f"{base} [{rssi} dBm]"
+    return base
+
+
 
 class BleIrkPairingManager:
     """Manage Bluetooth discovery, pairing, and IRK extraction."""
@@ -202,18 +238,39 @@ class BleIrkPairingManager:
         finally:
             await self.async_stop_discovery()
 
-        return [
-            {
-                "address": addr,
-                "name": info.name or addr,
-                "rssi": info.rssi,
-            }
-            for addr, info in sorted(
-                self._discovered.items(),
-                key=lambda item: item[1].rssi if item[1].rssi is not None else -999,
-                reverse=True,
+        results: list[dict[str, Any]] = []
+        for addr, info in sorted(
+            self._discovered.items(),
+            key=lambda item: item[1].rssi if item[1].rssi is not None else -999,
+            reverse=True,
+        ):
+            mfg_data = getattr(info, "manufacturer_data", None) or {}
+            clean_name = info.name.strip() if (info.name and info.name.strip()) else ""
+            if clean_name and clean_name.lower() != addr.lower():
+                dev_name = clean_name
+            elif (APPLE_MANUFACTURER_ID in mfg_data) or (76 in mfg_data):
+                dev_name = "Apple Device"
+            else:
+                dev_name = addr
+
+            label = format_device_label(
+                address=addr,
+                name=info.name,
+                rssi=info.rssi,
+                manufacturer_data=mfg_data,
             )
-        ]
+
+            results.append(
+                {
+                    "address": addr,
+                    "name": dev_name,
+                    "rssi": info.rssi,
+                    "label": label,
+                    "manufacturer_data": mfg_data,
+                }
+            )
+
+        return results
 
     async def async_stop_discovery(self) -> None:
         """Stop an active discovery scan."""

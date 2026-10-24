@@ -151,19 +151,55 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
         flow = BleIrkExtractorConfigFlow()
         flow._pairing_adapter = "00:11:22:33:44:55"
 
-        # Discovered devices returned
-        devices = [{"address": "AA:BB:CC:DD:EE:01", "name": "Phone", "rssi": -50}]
+        # Discovered devices returned with labels
+        devices = [
+            {
+                "address": "AA:BB:CC:DD:EE:01",
+                "name": "Josh's iPhone",
+                "rssi": -50,
+                "label": "Josh's iPhone (AA:BB:CC:DD:EE:01) [-50 dBm]",
+            },
+            {
+                "address": "AA:BB:CC:DD:EE:02",
+                "name": "Apple Device",
+                "rssi": -65,
+                "label": "Apple Device (AA:BB:CC:DD:EE:02) [-65 dBm]",
+            },
+        ]
         with patch("custom_components.ble_irk_extractor.config_flow.BleIrkPairingManager.async_discover_devices", new=AsyncMock(return_value=devices)):
             res_devices = await flow.async_step_device_selection()
             self.assertEqual(res_devices["type"], "form")
             self.assertEqual(res_devices["step_id"], "device_selection")
+            # Verify {address: label} options in schema
+            schema = res_devices["data_schema"].schema
+            validator = schema["device_address"]
+            self.assertEqual(
+                validator.container,
+                {
+                    "AA:BB:CC:DD:EE:01": "Josh's iPhone (AA:BB:CC:DD:EE:01) [-50 dBm]",
+                    "AA:BB:CC:DD:EE:02": "Apple Device (AA:BB:CC:DD:EE:02) [-65 dBm]",
+                },
+            )
 
-        # Pick a device -> moves to pair_confirm
+        # Pick a device -> moves to pair_confirm with resolved name
         with patch.object(flow, "async_step_pair_confirm", new=AsyncMock(return_value={"type": "form", "step_id": "pair_confirm"})):
             res_pick = await flow.async_step_device_selection({"device_address": "AA:BB:CC:DD:EE:01"})
             self.assertEqual(flow._pairing_device, "AA:BB:CC:DD:EE:01")
-            self.assertEqual(flow._pairing_device_name, "Phone")
+            self.assertEqual(flow._pairing_device_name, "Josh's iPhone")
             self.assertEqual(res_pick["step_id"], "pair_confirm")
+
+        # Pick Apple device -> sets name to Apple Device
+        with patch.object(flow, "async_step_pair_confirm", new=AsyncMock(return_value={"type": "form", "step_id": "pair_confirm"})):
+            res_pick2 = await flow.async_step_device_selection({"device_address": "AA:BB:CC:DD:EE:02"})
+            self.assertEqual(flow._pairing_device, "AA:BB:CC:DD:EE:02")
+            self.assertEqual(flow._pairing_device_name, "Apple Device")
+            self.assertEqual(res_pick2["step_id"], "pair_confirm")
+
+        # No devices found case
+        with patch("custom_components.ble_irk_extractor.config_flow.BleIrkPairingManager.async_discover_devices", new=AsyncMock(return_value=[])):
+            res_none = await flow.async_step_device_selection()
+            self.assertEqual(res_none["type"], "form")
+            self.assertEqual(res_none["errors"], {"base": "no_devices_found"})
 
     async def test_step_pair_confirm_and_pairing(self) -> None:
         flow = BleIrkExtractorConfigFlow()

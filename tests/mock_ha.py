@@ -18,8 +18,16 @@ def setup_ha_mocks():
             self.schema = schema or {}
         def __call__(self, val):
             return val
+    class InValidator:
+        def __init__(self, container):
+            self.container = container
+        def __call__(self, val):
+            if self.container and val not in self.container:
+                raise ValueError(f"Value '{val}' not in {self.container}")
+            return val
+
     def In(container):
-        return lambda val: val
+        return InValidator(container)
     def Required(key, default=None):
         return key
     def Optional(key, default=None):
@@ -253,10 +261,11 @@ def setup_ha_mocks():
         def __init__(self, address=None):
             self.address = address
     class BluetoothServiceInfoBleak:
-        def __init__(self, address, name=None, rssi=None):
+        def __init__(self, address, name=None, rssi=None, manufacturer_data=None):
             self.address = address
             self.name = name
             self.rssi = rssi
+            self.manufacturer_data = manufacturer_data or {}
     ha_comp_bt.BluetoothScanningMode = BluetoothScanningMode
     ha_comp_bt.BluetoothCallbackMatcher = BluetoothCallbackMatcher
     ha_comp_bt.BluetoothServiceInfoBleak = BluetoothServiceInfoBleak

@@ -207,5 +207,111 @@ class PairingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(result)
 
 
+    def test_format_device_label(self) -> None:
+        """Test formatting device labels across different advertisement profiles."""
+        from custom_components.ble_irk_extractor.pairing import (
+            APPLE_MANUFACTURER_ID,
+            format_device_label,
+        )
+
+        # 1. Named device with RSSI
+        label1 = format_device_label("AA:BB:CC:DD:EE:01", name="Josh's iPhone", rssi=-54)
+        self.assertEqual(label1, "Josh's iPhone (AA:BB:CC:DD:EE:01) [-54 dBm]")
+
+        # 2. Named device without RSSI
+        label2 = format_device_label("AA:BB:CC:DD:EE:01", name="Josh's iPhone", rssi=None)
+        self.assertEqual(label2, "Josh's iPhone (AA:BB:CC:DD:EE:01)")
+
+        # 3. Unnamed Apple device with manufacturer ID 0x004c (76) and RSSI
+        label3 = format_device_label(
+            "AA:BB:CC:DD:EE:02",
+            name=None,
+            rssi=-62,
+            manufacturer_data={APPLE_MANUFACTURER_ID: b"\x10\x05"},
+        )
+        self.assertEqual(label3, "Apple Device (AA:BB:CC:DD:EE:02) [-62 dBm]")
+
+        # 4. Unnamed Apple device without RSSI
+        label4 = format_device_label(
+            "AA:BB:CC:DD:EE:02",
+            name="",
+            rssi=None,
+            manufacturer_data={76: b"\x10\x05"},
+        )
+        self.assertEqual(label4, "Apple Device (AA:BB:CC:DD:EE:02)")
+
+        # 5. Device whose name equals address (unnamed) but has Apple manufacturer ID
+        label5 = format_device_label(
+            "AA:BB:CC:DD:EE:02",
+            name="aa:bb:cc:dd:ee:02",
+            rssi=-45,
+            manufacturer_data={76: b"\x10\x05"},
+        )
+        self.assertEqual(label5, "Apple Device (AA:BB:CC:DD:EE:02) [-45 dBm]")
+
+        # 6. Unnamed generic BLE peripheral with RSSI
+        label6 = format_device_label("AA:BB:CC:DD:EE:03", name=None, rssi=-78)
+        self.assertEqual(label6, "AA:BB:CC:DD:EE:03 [-78 dBm]")
+
+        # 7. Unnamed generic BLE peripheral without RSSI
+        label7 = format_device_label("AA:BB:CC:DD:EE:03", name="", rssi=None)
+        self.assertEqual(label7, "AA:BB:CC:DD:EE:03")
+
+    async def test_async_discover_devices_metadata_and_sorting(self) -> None:
+        """Test that discovered devices include labels, manufacturer metadata, and are sorted by RSSI."""
+        hass = HomeAssistant()
+        manager = BleIrkPairingManager(hass)
+
+        mock_scanner = MagicMock()
+        unsub = MagicMock()
+
+        def fake_register(hass, callback, matcher, mode=None):
+            # Unnamed generic beacon (-85 dBm)
+            callback(BluetoothServiceInfoBleak("AA:BB:CC:DD:EE:03", name=None, rssi=-85), None)
+            # Unnamed Apple device (-50 dBm)
+            callback(
+                BluetoothServiceInfoBleak(
+                    "AA:BB:CC:DD:EE:02",
+                    name=None,
+                    rssi=-50,
+                    manufacturer_data={76: b"\x12\x02"},
+                ),
+                None,
+            )
+            # Named device close by (-35 dBm)
+            callback(BluetoothServiceInfoBleak("AA:BB:CC:DD:EE:01", name="Josh's iPhone", rssi=-35), None)
+            # Device with no RSSI (None)
+            callback(BluetoothServiceInfoBleak("AA:BB:CC:DD:EE:04", name="Distant Device", rssi=None), None)
+            return unsub
+
+        with patch.object(bluetooth, "async_get_scanner", return_value=mock_scanner), \
+             patch.object(bluetooth, "async_register_callback", side_effect=fake_register), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            devices = await manager.async_discover_devices("00:11:22:33:44:55")
+            self.assertEqual(len(devices), 4)
+
+            # Sort order: -35 dBm, -50 dBm, -85 dBm, None
+            self.assertEqual(devices[0]["address"], "AA:BB:CC:DD:EE:01")
+            self.assertEqual(devices[0]["name"], "Josh's iPhone")
+            self.assertEqual(devices[0]["label"], "Josh's iPhone (AA:BB:CC:DD:EE:01) [-35 dBm]")
+            self.assertEqual(devices[0]["rssi"], -35)
+
+            self.assertEqual(devices[1]["address"], "AA:BB:CC:DD:EE:02")
+            self.assertEqual(devices[1]["name"], "Apple Device")
+            self.assertEqual(devices[1]["label"], "Apple Device (AA:BB:CC:DD:EE:02) [-50 dBm]")
+            self.assertEqual(devices[1]["rssi"], -50)
+            self.assertIn(76, devices[1]["manufacturer_data"])
+
+            self.assertEqual(devices[2]["address"], "AA:BB:CC:DD:EE:03")
+            self.assertEqual(devices[2]["name"], "AA:BB:CC:DD:EE:03")
+            self.assertEqual(devices[2]["label"], "AA:BB:CC:DD:EE:03 [-85 dBm]")
+            self.assertEqual(devices[2]["rssi"], -85)
+
+            self.assertEqual(devices[3]["address"], "AA:BB:CC:DD:EE:04")
+            self.assertEqual(devices[3]["name"], "Distant Device")
+            self.assertEqual(devices[3]["label"], "Distant Device (AA:BB:CC:DD:EE:04)")
+            self.assertIsNone(devices[3]["rssi"])
+
+
 if __name__ == "__main__":
     unittest.main()
