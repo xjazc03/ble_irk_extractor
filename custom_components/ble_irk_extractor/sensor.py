@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
+try:
+    from homeassistant.const import EntityCategory
+except ImportError:
+    EntityCategory = None
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,6 +34,8 @@ class BleIrkSensor(CoordinatorEntity[BleIrkCoordinator], SensorEntity):
     _attr_translation_key = "irk_keys"
     _attr_icon = "mdi:bluetooth"
     _attr_should_poll = False
+    if EntityCategory is not None and hasattr(EntityCategory, "DIAGNOSTIC"):
+        _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self, entry: ConfigEntry, coordinator: BleIrkCoordinator
@@ -52,11 +58,13 @@ class BleIrkSensor(CoordinatorEntity[BleIrkCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Return the IRKs and useful scan metadata.
+        """Return the IRKs and structured device metadata.
 
-        ``keys`` intentionally matches the format from the original spec:
-        a mapping of friendly device label -> 32-character IRK.  ``devices``
-        adds the address and source path for troubleshooting.
+        Exposes:
+        - `keys`: friendly device label -> 32-character IRK
+        - `devices`: friendly device label -> dict with address, irk, source, friendly_name, mac_address
+        - `extracted_devices`: list of device dicts (friendly_name, mac_address, irk, source)
+        - `sources`, `missing_paths`, `errors`, `last_scan`, `scan_interval_minutes`
         """
         data = self.coordinator.data
         if data is None:
@@ -64,23 +72,29 @@ class BleIrkSensor(CoordinatorEntity[BleIrkCoordinator], SensorEntity):
 
         keys: dict[str, str] = {}
         devices: dict[str, dict[str, str | None]] = {}
+        extracted_list: list[dict[str, str | None]] = []
 
         for record in data.records:
             label = _unique_label(record.display_name, keys)
             keys[label] = record.irk
-            devices[label] = {
+            dev_data = {
+                "friendly_name": record.display_name,
+                "mac_address": record.address,
                 "address": record.address,
                 "irk": record.irk,
                 "source": record.source,
             }
+            devices[label] = dev_data
+            extracted_list.append(dev_data)
 
         return {
             "keys": keys,
             "devices": devices,
+            "extracted_devices": extracted_list,
             "sources": list(data.scanned_paths),
             "missing_paths": list(data.missing_paths),
             "errors": list(data.errors),
-            "last_scan": data.scanned_at.isoformat(),
+            "last_scan": data.scanned_at.isoformat() if data.scanned_at else None,
             "scan_interval_minutes": self.coordinator.scan_interval_minutes,
         }
 

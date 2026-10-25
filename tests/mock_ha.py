@@ -96,7 +96,11 @@ def setup_ha_mocks():
     class Platform:
         SENSOR = "sensor"
         BUTTON = "button"
+    class EntityCategory:
+        CONFIG = "config"
+        DIAGNOSTIC = "diagnostic"
     ha_const.Platform = Platform
+    ha_const.EntityCategory = EntityCategory
 
     # Mock config_entries
     ha_ce = types.ModuleType("homeassistant.config_entries")
@@ -278,7 +282,18 @@ def setup_ha_mocks():
 
     ha_comp_sensor = types.ModuleType("homeassistant.components.sensor")
     class SensorEntity:
-        pass
+        @property
+        def unique_id(self):
+            return getattr(self, "_attr_unique_id", None)
+        @property
+        def entity_category(self):
+            return getattr(self, "_attr_entity_category", None)
+        @property
+        def translation_key(self):
+            return getattr(self, "_attr_translation_key", None)
+        @property
+        def icon(self):
+            return getattr(self, "_attr_icon", None)
     ha_comp_sensor.SensorEntity = SensorEntity
 
     ha_comp_button = types.ModuleType("homeassistant.components.button")

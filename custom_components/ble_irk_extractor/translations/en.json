@@ -16,6 +16,14 @@
           "retry": "Retry scan"
         }
       },
+      "irk_details": {
+        "title": "IRK Key Details",
+        "description": "Extracted key details for **{name}** ({address}):\n\n**IRK Key**:\n`{irk}`\n\nYou can copy the IRK key above, or keep the toggle enabled to automatically set up a Private BLE Device.",
+        "data": {
+          "irk_display": "IRK Key (Copyable)",
+          "forward_to_pbd": "Forward to Private BLE Device"
+        }
+      },
       "add_irk": {
         "title": "Add IRK Key",
         "description": "Manually enter a device name and 32-character hexadecimal Identity Resolving Key (IRK).",
@@ -116,8 +124,51 @@
   "options": {
     "step": {
       "init": {
-        "title": "BLE IRK Extractor options",
-        "description": "Change the BlueZ source paths or how often the files are rescanned.",
+        "title": "BLE IRK Extractor Options",
+        "description": "Select an action to configure or extract keys:\n- **Select / View Extracted IRK**: Inspect extracted keys or forward to Private BLE Device.\n- **Add IRK Key**: Manually enter an IRK.\n- **Extract IRK Key**: Put adapter in pairing mode to receive new device keys.\n- **Configure BlueZ Paths**: Update host storage paths or rescan interval.",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "select_irk": {
+        "title": "Select IRK Key",
+        "description": "Select a paired device from synced BlueZ storage to view its key or configure a Private BLE Device.",
+        "data": {
+          "selected_device": "Discovered device",
+          "retry": "Retry scan"
+        }
+      },
+      "irk_details": {
+        "title": "IRK Key Details",
+        "description": "Extracted key details for **{name}** ({address}):\n\n**IRK Key**:\n`{irk}`\n\nYou can copy the IRK key above, or keep the toggle enabled to automatically set up a Private BLE Device.",
+        "data": {
+          "irk_display": "IRK Key (Copyable)",
+          "forward_to_pbd": "Forward to Private BLE Device"
+        }
+      },
+      "add_irk": {
+        "title": "Add IRK Key",
+        "description": "Manually enter a device name and 32-character hexadecimal Identity Resolving Key (IRK).",
+        "data": {
+          "name": "Device name",
+          "irk": "IRK Key"
+        }
+      },
+      "extract_irk": {
+        "title": "Extract IRK Key (Pairing Mode)",
+        "description": "Pairing mode is active on your Bluetooth adapter ({adapter}) for {timeout} seconds. Open Bluetooth settings on your phone or device, select this Home Assistant server, and complete pairing. When finished, submit this form.",
+        "data": {
+          "confirm_paired": "I have finished pairing"
+        }
+      },
+      "extract_sync": {
+        "title": "Sync BlueZ Storage",
+        "description": "Pairing mode has been safely deactivated. BlueZ stores pairing keys on the host. To sync them to Home Assistant storage, run this terminal command on your host or SSH terminal:\n\n`{copy_command}`\n\nOnce completed, select 'Select / View Extracted IRK' to inspect or configure your Private BLE Device.",
+        "data": {}
+      },
+      "paths": {
+        "title": "Configure BlueZ Paths",
+        "description": "Update the BlueZ source paths or scan interval.",
         "data": {
           "name": "Name",
           "copied_path": "Copied BlueZ folder",
@@ -134,13 +185,15 @@
     },
     "error": {
       "no_paths": "Enter at least one BlueZ source path.",
-      "no_valid_paths": "None of the configured paths exist. Check the paths and try again."
+      "no_valid_paths": "None of the configured paths exist. Check the paths and try again.",
+      "no_irks_found": "No IRK keys found. Run the copy command on your host first:\n{copy_command}",
+      "invalid_irk_format": "The IRK must be a valid 32-character hexadecimal string (16 bytes)."
     }
   },
   "entity": {
     "sensor": {
       "irk_keys": {
-        "name": "IRK keys"
+        "name": "Extracted IRK keys"
       }
     },
     "button": {
